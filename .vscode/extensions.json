@@ -1,8 +1,9 @@
 {
     "recommendations": [
         "esphome.esphome-vscode",
+        "ms-python.python",
         "ms-vscode.cpptools",
         "redhat.vscode-yaml",
-        "zandr.statusbar-tasks"
+        "spencerwmiles.vscode-task-buttons"
     ]
 }

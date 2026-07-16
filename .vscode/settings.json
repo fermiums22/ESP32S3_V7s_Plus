@@ -2,6 +2,34 @@
     "C_Cpp.default.compileCommands": "${workspaceFolder}/.esphome/build/v7s-plus/build/compile_commands.json",
     "C_Cpp.default.intelliSenseMode": "gcc-x64",
     "cmake.configureOnOpen": false,
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "esphome.validator": "local",
+    "files.associations": {
+        "v7s-plus.yaml": "esphome"
+    },
+    "VsCodeTaskButtons.showCounter": false,
+    "VsCodeTaskButtons.tasks": [
+        {
+            "label": "$(tools) Build",
+            "task": "ESPHome: compile",
+            "tooltip": "Compile ESPHome firmware"
+        },
+        {
+            "label": "$(circuit-board) Factory",
+            "task": "ESPHome: factory flash USB",
+            "tooltip": "Build and flash full image over USB"
+        },
+        {
+            "label": "$(cloud-upload) Upload",
+            "task": "ESPHome: upload",
+            "tooltip": "Upload existing firmware"
+        },
+        {
+            "label": "$(terminal) Logs",
+            "task": "ESPHome: logs",
+            "tooltip": "Open device logs"
+        }
+    ],
     "files.exclude": {
         "**/.venv": true,
         "**/.esphome": true,

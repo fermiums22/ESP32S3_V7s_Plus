@@ -6,11 +6,6 @@
             "type": "process",
             "command": "${workspaceFolder}\\setup_esphome.bat",
             "problemMatcher": [],
-            "options": {
-                "statusbar": {
-                    "hide": true
-                }
-            },
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated",
@@ -26,12 +21,6 @@
                 "isDefault": true
             },
             "problemMatcher": ["$gcc"],
-            "options": {
-                "statusbar": {
-                    "label": "$(tools) Build",
-                    "detail": "Compile ESPHome firmware"
-                }
-            },
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated",
@@ -43,12 +32,6 @@
             "type": "process",
             "command": "${workspaceFolder}\\factory_flash.bat",
             "problemMatcher": [],
-            "options": {
-                "statusbar": {
-                    "label": "$(circuit-board) Factory",
-                    "detail": "Build and flash full factory image over USB"
-                }
-            },
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated",
@@ -60,12 +43,6 @@
             "type": "process",
             "command": "${workspaceFolder}\\flash.bat",
             "problemMatcher": [],
-            "options": {
-                "statusbar": {
-                    "label": "$(cloud-upload) Upload",
-                    "detail": "Upload the existing firmware"
-                }
-            },
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated",
@@ -77,12 +54,6 @@
             "type": "process",
             "command": "${workspaceFolder}\\logs.bat",
             "problemMatcher": [],
-            "options": {
-                "statusbar": {
-                    "label": "$(terminal) Logs",
-                    "detail": "Open ESPHome device logs"
-                }
-            },
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated",
