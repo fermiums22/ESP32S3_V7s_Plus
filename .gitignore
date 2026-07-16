@@ -1,0 +1,16 @@
+.venv/
+.esphome/
+secrets.yaml
+
+# Previous local ESP-IDF bring-up; safe to remove after migration.
+.sdk/
+.tools/
+.local-tools/
+build/
+sdkconfig
+sdkconfig.old
+config/
+
+*.log
+Thumbs.db
+Desktop.ini
