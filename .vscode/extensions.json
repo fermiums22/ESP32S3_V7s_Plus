@@ -3,6 +3,6 @@
         "esphome.esphome-vscode",
         "ms-vscode.cpptools",
         "redhat.vscode-yaml",
-        "ttereves.taskbuttons"
+        "zandr.statusbar-tasks"
     ]
 }

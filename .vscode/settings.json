@@ -2,24 +2,6 @@
     "C_Cpp.default.compileCommands": "${workspaceFolder}/.esphome/build/v7s-plus/build/compile_commands.json",
     "C_Cpp.default.intelliSenseMode": "gcc-x64",
     "cmake.configureOnOpen": false,
-    "taskButtons.buttons": [
-        {
-            "task": "ESPHome: compile",
-            "buttonLabel": "$(tools) Build"
-        },
-        {
-            "task": "ESPHome: factory flash USB",
-            "buttonLabel": "$(circuit-board) Factory"
-        },
-        {
-            "task": "ESPHome: upload",
-            "buttonLabel": "$(cloud-upload) Upload"
-        },
-        {
-            "task": "ESPHome: logs",
-            "buttonLabel": "$(terminal) Logs"
-        }
-    ],
     "files.exclude": {
         "**/.venv": true,
         "**/.esphome": true,
