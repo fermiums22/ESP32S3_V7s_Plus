@@ -1,5 +1,5 @@
 @echo off
-set "PORT=%~1"
-if not defined PORT set "PORT=COM9"
-call "%~dp0tools\esphome.bat" logs "%~dp0v7s-plus.yaml" --device "%PORT%"
+set "DEVICE=%~1"
+if not defined DEVICE set "DEVICE=v7s-plus.local"
+call "%~dp0tools\esphome.bat" logs "%~dp0v7s-plus.yaml" --device "%DEVICE%"
 exit /b %ERRORLEVEL%

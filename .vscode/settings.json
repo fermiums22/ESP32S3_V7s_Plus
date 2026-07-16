@@ -27,7 +27,7 @@
         {
             "label": "$(terminal) Logs",
             "task": "ESPHome: logs",
-            "tooltip": "Open device logs"
+            "tooltip": "Open device logs over Wi-Fi"
         }
     ],
     "files.exclude": {
