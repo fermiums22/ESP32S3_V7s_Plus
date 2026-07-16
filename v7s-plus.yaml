@@ -22,6 +22,35 @@ psram:
 logger:
   hardware_uart: USB_SERIAL_JTAG
 
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 1100ms
+    window: 300ms
+    active: true
+
+ble_client:
+  - id: gopro_client
+    mac_address: !secret gopro_ble_mac
+    auto_connect: true
+
+gopro_ble:
+  id: gopro
+  ble_client_id: gopro_client
+  connected:
+    name: GoPro BLE connected
+  recording:
+    name: GoPro recording
+  locate:
+    name: GoPro locate
+  battery:
+    name: GoPro battery
+  sleep:
+    name: GoPro sleep
+  refresh:
+    name: GoPro refresh state
+  status:
+    name: GoPro status
+
 uart:
   id: stm32_uart
   tx_pin: GPIO42

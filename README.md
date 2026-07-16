@@ -50,3 +50,7 @@ bootloader, partition table и приложение — такой же комп
 
 Связь со STM32, Modbus-сущности и порядок обновления нижнего уровня описаны в
 [`Docs/STM32_UPDATE.md`](Docs/STM32_UPDATE.md).
+
+ESP32 является единственным BLE-владельцем GoPro HERO12 и сохраняет управление
+камерой без Wi-Fi и Home Assistant. Первичное сопряжение, сущности HA и контракт
+для будущей ИИ-логики описаны в [`Docs/GOPRO_BLE.md`](Docs/GOPRO_BLE.md).
