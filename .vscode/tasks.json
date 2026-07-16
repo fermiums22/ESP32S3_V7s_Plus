@@ -39,7 +39,7 @@
             }
         },
         {
-            "label": "ESPHome: upload",
+            "label": "ESPHome: OTA",
             "type": "process",
             "command": "${workspaceFolder}\\flash.bat",
             "problemMatcher": [],

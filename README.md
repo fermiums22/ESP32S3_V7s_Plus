@@ -29,7 +29,7 @@ logs.bat COM9
 
 Скопируйте `secrets.example.yaml` в `secrets.yaml` и заполните локальные ключи.
 `secrets.yaml` игнорируется Git. В VS Code доступны задачи `ESPHome: setup`,
-`ESPHome: compile`, `ESPHome: factory flash USB`, `ESPHome: upload` и
+`ESPHome: compile`, `ESPHome: factory flash USB`, `ESPHome: OTA` и
 `ESPHome: logs`.
 
 ## Конфигурация

@@ -20,9 +20,9 @@
             "tooltip": "Build and flash full image over USB"
         },
         {
-            "label": "$(cloud-upload) Upload",
-            "task": "ESPHome: upload",
-            "tooltip": "Upload existing firmware"
+            "label": "$(cloud-upload) OTA",
+            "task": "ESPHome: OTA",
+            "tooltip": "Upload firmware to v7s-plus.local over Wi-Fi"
         },
         {
             "label": "$(terminal) Logs",
