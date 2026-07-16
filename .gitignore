@@ -12,5 +12,7 @@ sdkconfig.old
 config/
 
 *.log
+__pycache__/
+*.pyc
 Thumbs.db
 Desktop.ini
