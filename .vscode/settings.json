@@ -3,10 +3,6 @@
     "C_Cpp.default.intelliSenseMode": "gcc-x64",
     "cmake.configureOnOpen": false,
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
-    "esphome.validator": "local",
-    "files.associations": {
-        "v7s-plus.yaml": "esphome"
-    },
     "VsCodeTaskButtons.showCounter": false,
     "VsCodeTaskButtons.tasks": [
         {
