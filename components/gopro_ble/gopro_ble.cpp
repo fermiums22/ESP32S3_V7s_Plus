@@ -47,6 +47,7 @@ void GoProBLE::set_ready_(bool ready) {
   if (this->connected_sensor_ != nullptr)
     this->connected_sensor_->publish_state(ready);
   if (!ready) {
+    this->recording_ = false;
     this->write_pending_ = false;
     this->action_head_ = this->action_tail_ = 0;
     this->notify_mask_ = 0;
@@ -70,6 +71,7 @@ void GoProBLE::set_recording(bool value) {
     this->publish_status_("GoPro BLE unavailable");
     return;
   }
+  this->last_activity_ms_ = millis();
   this->enqueue_(value ? Action::SHUTTER_ON : Action::SHUTTER_OFF);
   this->enqueue_(Action::QUERY_ENCODING);
 }
@@ -79,13 +81,32 @@ void GoProBLE::set_locate(bool value) {
     this->publish_status_("GoPro BLE unavailable");
     return;
   }
+  this->last_activity_ms_ = millis();
   this->enqueue_(value ? Action::LOCATE_ON : Action::LOCATE_OFF);
   this->enqueue_(Action::QUERY_LOCATE);
 }
 
 void GoProBLE::sleep_camera() {
-  if (this->ready_)
+  if (this->ready_ && !this->sleep_requested_) {
+    this->action_head_ = this->action_tail_ = 0;
+    this->sleep_requested_ = true;
     this->enqueue_(Action::SLEEP);
+  }
+}
+
+void GoProBLE::wake_camera() {
+  this->sleep_requested_ = false;
+  this->disable_after_write_ = false;
+  this->last_activity_ms_ = millis();
+  this->parent()->set_enabled(true);
+  this->publish_status_("waiting for GoPro BLE");
+}
+
+void GoProBLE::set_keep_awake(bool value) {
+  this->keep_awake_ = value;
+  this->last_activity_ms_ = millis();
+  if (value)
+    this->wake_camera();
 }
 
 void GoProBLE::refresh() {
@@ -181,7 +202,10 @@ bool GoProBLE::send_action_(Action action) {
       handle = this->query_handle_;
       break;
   }
-  return this->write_payload_(handle, payload, size);
+  const bool sent = this->write_payload_(handle, payload, size);
+  if (sent && action == Action::SLEEP)
+    this->disable_after_write_ = true;
+  return sent;
 }
 
 void GoProBLE::loop() {
@@ -195,6 +219,11 @@ void GoProBLE::loop() {
   if (this->write_pending_)
     return;
 
+  if (!this->keep_awake_ && !this->recording_ && !this->sleep_requested_ &&
+      now - this->last_activity_ms_ >= this->idle_timeout_ms_) {
+    this->sleep_camera();
+  }
+
   if (this->action_tail_ != this->action_head_) {
     const Action action = this->actions_[this->action_tail_];
     if (this->send_action_(action))
@@ -202,7 +231,7 @@ void GoProBLE::loop() {
     return;
   }
 
-  if (now - this->last_keep_alive_ms_ >= 3000) {
+  if ((this->keep_awake_ || this->recording_) && now - this->last_keep_alive_ms_ >= 3000) {
     const uint8_t keep_alive[] = {91, 1, 0x42};
     if (this->write_payload_(this->settings_handle_, keep_alive, sizeof(keep_alive)))
       this->last_keep_alive_ms_ = now;
@@ -305,6 +334,7 @@ void GoProBLE::parse_query_response_() {
       if (id == 70 && this->battery_sensor_ != nullptr) {
         this->battery_sensor_->publish_state(value);
       } else if (id == 10 && this->recording_switch_ != nullptr) {
+        this->recording_ = value != 0;
         this->recording_switch_->publish_state(value != 0);
         this->publish_status_(value != 0 ? "recording" : "ready");
       } else if (id == 8 && value != 0) {
@@ -362,6 +392,7 @@ void GoProBLE::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gat
         this->status_clear_error();
         this->publish_status_("ready");
         this->last_keep_alive_ms_ = millis();
+        this->last_activity_ms_ = millis();
         if (this->network_handle_ != 0 && !this->pair_enqueued_) {
           this->enqueue_(Action::PAIR_COMPLETE);
           this->pair_enqueued_ = true;
@@ -375,6 +406,15 @@ void GoProBLE::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gat
       if (param->write.status != ESP_GATT_OK) {
         ESP_LOGW(TAG, "GoPro characteristic write error: %u", param->write.status);
         this->publish_status_("BLE write error");
+        if (this->disable_after_write_) {
+          this->disable_after_write_ = false;
+          this->sleep_requested_ = false;
+        }
+      }
+      if (this->disable_after_write_ && param->write.handle == this->command_handle_) {
+        this->disable_after_write_ = false;
+        this->publish_status_("sleeping");
+        this->parent()->set_enabled(false);
       }
       break;
     case ESP_GATTC_NOTIFY_EVT:

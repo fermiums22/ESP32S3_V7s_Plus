@@ -35,7 +35,9 @@ All entities belong to the ESPHome device `V7s Plus`:
 | `GoPro status` | GoPro -> HA | Connection, recording, busy or thermal state |
 | `GoPro recording` | bidirectional | Starts/stops shutter encoding |
 | `GoPro locate` | bidirectional | Enables the camera locate beeper |
+| `GoPro keep awake` | HA -> ESP | Enables the 3-second keep-alive while idle |
 | `GoPro sleep` | HA -> GoPro | Puts the camera into BLE-connectable sleep |
+| `GoPro wake` | HA -> ESP | Enables BLE reconnect; connecting wakes GoPro |
 | `GoPro refresh state` | HA -> GoPro | Immediately polls important statuses |
 
 Future local robot behavior must call the same `GoProBLE` methods instead of
@@ -47,7 +49,13 @@ and autonomous behavior from racing each other.
 - ESPHome reconnects automatically to the configured MAC.
 - Each connection re-subscribes to Open GoPro response notifications; GoPro
   does not cache subscriptions.
-- A keep-alive is sent every 3 seconds while connected.
+- A keep-alive is sent every 3 seconds only while recording or while
+  `GoPro keep awake` is ON.
+- With keep-awake OFF, five minutes without a local/user command puts GoPro to
+  sleep and disables BLE auto-reconnect. This avoids immediately waking the
+  camera again. `GoPro wake` re-enables reconnect.
+- GoPro normally remains BLE-wakeable for about eight hours after sleep; after
+  a longer shutdown it may require the camera power button.
 - Battery, encoding, busy and overheating states are polled without blocking
   the ESPHome main loop.
 - Commands use the official Open GoPro characteristics `GP-0072` through

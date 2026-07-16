@@ -42,14 +42,19 @@ gopro_ble:
     name: GoPro recording
   locate:
     name: GoPro locate
+  keep_awake:
+    name: GoPro keep awake
   battery:
     name: GoPro battery
   sleep:
     name: GoPro sleep
+  wake:
+    name: GoPro wake
   refresh:
     name: GoPro refresh state
   status:
     name: GoPro status
+  idle_timeout: 5min
 
 uart:
   id: stm32_uart

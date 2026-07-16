@@ -14,6 +14,7 @@ namespace esphome::gopro_ble {
 
 class GoProRecordingSwitch;
 class GoProLocateSwitch;
+class GoProKeepAwakeSwitch;
 
 class GoProBLE : public Component, public ble_client::BLEClientNode {
  public:
@@ -29,10 +30,13 @@ class GoProBLE : public Component, public ble_client::BLEClientNode {
   void set_status_sensor(text_sensor::TextSensor *value) { this->status_sensor_ = value; }
   void set_recording_switch(GoProRecordingSwitch *value) { this->recording_switch_ = value; }
   void set_locate_switch(GoProLocateSwitch *value) { this->locate_switch_ = value; }
+  void set_idle_timeout(uint32_t value) { this->idle_timeout_ms_ = value; }
 
   void set_recording(bool value);
   void set_locate(bool value);
   void sleep_camera();
+  void wake_camera();
+  void set_keep_awake(bool value);
   void refresh();
 
  protected:
@@ -85,6 +89,12 @@ class GoProBLE : public Component, public ble_client::BLEClientNode {
   bool write_pending_{false};
   bool ready_{false};
   bool pair_enqueued_{false};
+  bool keep_awake_{false};
+  bool recording_{false};
+  bool sleep_requested_{false};
+  bool disable_after_write_{false};
+  uint32_t idle_timeout_ms_{300000};
+  uint32_t last_activity_ms_{0};
   uint32_t last_write_ms_{0};
   uint32_t last_keep_alive_ms_{0};
   uint32_t last_poll_ms_{0};
@@ -105,6 +115,14 @@ class GoProLocateSwitch : public switch_::Switch, public Parented<GoProBLE> {
   void write_state(bool state) override { this->parent_->set_locate(state); }
 };
 
+class GoProKeepAwakeSwitch : public switch_::Switch, public Parented<GoProBLE> {
+ protected:
+  void write_state(bool state) override {
+    this->publish_state(state);
+    this->parent_->set_keep_awake(state);
+  }
+};
+
 class GoProSleepButton : public button::Button, public Parented<GoProBLE> {
  protected:
   void press_action() override { this->parent_->sleep_camera(); }
@@ -113,6 +131,11 @@ class GoProSleepButton : public button::Button, public Parented<GoProBLE> {
 class GoProRefreshButton : public button::Button, public Parented<GoProBLE> {
  protected:
   void press_action() override { this->parent_->refresh(); }
+};
+
+class GoProWakeButton : public button::Button, public Parented<GoProBLE> {
+ protected:
+  void press_action() override { this->parent_->wake_camera(); }
 };
 
 }  // namespace esphome::gopro_ble
