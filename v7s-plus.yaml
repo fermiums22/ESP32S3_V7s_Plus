@@ -2,6 +2,15 @@ esphome:
   name: v7s-plus
   friendly_name: V7s Plus
   min_version: 2026.6.5
+  on_boot:
+    priority: -100
+    then:
+      - binary_sensor.template.publish:
+          id: stm32_online
+          state: false
+      - binary_sensor.template.publish:
+          id: audio_bridge_online
+          state: false
 
 external_components:
   - source:
@@ -11,9 +20,17 @@ external_components:
 esp32:
   board: esp32-s3-devkitc-1
   flash_size: 16MB
+  partitions:
+    - name: audio
+      type: data
+      subtype: spiffs
+      size: 0x600000
   toolchain: esp-idf
   framework:
     type: esp-idf
+    sdkconfig_options:
+      CONFIG_LWIP_TCP_WND_DEFAULT: "65535"
+      CONFIG_LWIP_TCP_RECVMBOX_SIZE: "32"
 
 psram:
   mode: octal
@@ -21,65 +38,74 @@ psram:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-
-esp32_ble_tracker:
-  scan_parameters:
-    interval: 1100ms
-    window: 300ms
-    active: true
-
-ble_client:
-  - id: gopro_client
-    mac_address: !secret gopro_ble_mac
-    auto_connect: true
-
-gopro_ble:
-  id: gopro
-  ble_client_id: gopro_client
-  connected:
-    name: GoPro BLE connected
-  recording:
-    name: GoPro recording
-  locate:
-    name: GoPro locate
-  keep_awake:
-    name: GoPro keep awake
-  battery:
-    name: GoPro battery
-  sleep:
-    name: GoPro sleep
-  wake:
-    name: GoPro wake
-  refresh:
-    name: GoPro refresh state
-  status:
-    name: GoPro status
-  idle_timeout: 5min
+  logs:
+    modbus: ERROR
+    modbus_controller: ERROR
+    modbus_controller.sensor: ERROR
+    modbus_controller.binary_sensor: ERROR
+    modbus_controller.number: ERROR
+    modbus_controller.switch: ERROR
 
 uart:
-  id: stm32_uart
-  tx_pin: GPIO42
-  rx_pin: GPIO41
-  baud_rate: 921600
-  data_bits: 8
-  parity: NONE
-  stop_bits: 1
-  rx_buffer_size: 512
+  - id: stm32_uart
+    tx_pin: GPIO42
+    rx_pin: GPIO41
+    baud_rate: 921600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 512
+  - id: bridge_uart
+    tx_pin: GPIO17
+    rx_pin: GPIO18
+    baud_rate: 115200
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 256
 
 modbus:
-  id: stm32_modbus
-  uart_id: stm32_uart
-  role: client
-  send_wait_time: 2ms
+  - id: stm32_modbus
+    uart_id: stm32_uart
+    role: client
+    send_wait_time: 2ms
+  - id: bridge_modbus
+    uart_id: bridge_uart
+    role: client
+    send_wait_time: 50ms
+    turnaround_time: 5ms
 
 modbus_controller:
   - id: stm32_controller
     address: 1
     modbus_id: stm32_modbus
     command_throttle: 2ms
-    update_interval: 200ms
-    max_cmd_retries: 2
+    update_interval: 2s
+    max_cmd_retries: 0
     offline_skip_updates: 5
+    on_online:
+      - binary_sensor.template.publish:
+          id: stm32_online
+          state: true
+    on_offline:
+      - binary_sensor.template.publish:
+          id: stm32_online
+          state: false
+  - id: bridge_controller
+    address: 2
+    modbus_id: bridge_modbus
+    command_throttle: 5ms
+    update_interval: 1s
+    max_cmd_retries: 1
+    offline_skip_updates: 0
+    on_online:
+      - binary_sensor.template.publish:
+          id: audio_bridge_online
+          state: true
+    on_offline:
+      - binary_sensor.template.publish:
+          id: audio_bridge_online
+          state: false
 
 v7s_stm32_flasher:
   id: stm32_flasher
@@ -110,6 +136,45 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  power_save_mode: NONE
+
+pcm_i2s_tx:
+
+speaker:
+  - platform: pcm_i2s_tx
+    id: pcm_bridge
+
+media_player:
+  - platform: speaker
+    id: wifi_audio_player
+    name: WiFi audio
+    buffer_size: 1000000
+    announcement_pipeline:
+      speaker: pcm_bridge
+      format: MP3
+      sample_rate: 44100
+      num_channels: 2
+
+globals:
+  - id: local_audio_active
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return id(local_audio_active) &&
+                     api::global_api_server->is_connected_with_state_subscription();
+          then:
+            - media_player.repeat_off: wifi_audio_player
+            - media_player.stop: wifi_audio_player
+            - globals.set:
+                id: local_audio_active
+                value: "false"
 
 sensor:
   - platform: uptime
@@ -117,6 +182,70 @@ sensor:
   - platform: wifi_signal
     name: Wi-Fi signal
     update_interval: 60s
+  - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    id: audio_bridge_heartbeat
+    name: Audio bridge heartbeat
+    register_type: holding
+    address: 0
+    value_type: U_WORD
+    accuracy_decimals: 0
+    on_value:
+      - lambda: |-
+          static uint8_t logged = 0;
+          if (logged < 3) {
+            ESP_LOGI("bridge", "Audio bridge heartbeat=%.0f", x);
+            logged++;
+          }
+      - if:
+          condition:
+            binary_sensor.is_off: audio_bridge_online
+          then:
+            - logger.log: "Audio bridge heartbeat received"
+            - binary_sensor.template.publish:
+                id: audio_bridge_online
+                state: true
+  - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    id: audio_bridge_play_request
+    internal: true
+    register_type: holding
+    address: 2
+    value_type: U_WORD
+    accuracy_decimals: 0
+    on_value:
+      - if:
+          condition:
+            lambda: |-
+              static bool initialized = false;
+              static uint16_t previous = 0;
+              const uint16_t current = static_cast<uint16_t>(x);
+              const bool pressed = initialized && current != previous;
+              previous = current;
+              initialized = true;
+              return pressed &&
+                     !api::global_api_server->is_connected_with_state_subscription();
+          then:
+            - if:
+                condition:
+                  media_player.is_playing: wifi_audio_player
+                then:
+                  - media_player.pause: wifi_audio_player
+                else:
+                  - if:
+                      condition:
+                        media_player.is_paused: wifi_audio_player
+                      then:
+                        - media_player.play: wifi_audio_player
+                      else:
+                        - media_player.repeat_one: wifi_audio_player
+                        - lambda: |-
+                            auto *file = id(pcm_bridge).get_local_audio_file();
+                            if (file != nullptr)
+                              id(wifi_audio_player).play_file(file, false, false);
+                        - globals.set:
+                            id: local_audio_active
+                            value: "true"
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
     name: STM32 battery voltage
@@ -219,6 +348,14 @@ sensor:
     state_class: total_increasing
 
 binary_sensor:
+  - platform: template
+    id: audio_bridge_online
+    name: Audio bridge online
+    device_class: connectivity
+  - platform: template
+    id: stm32_online
+    name: STM32 online
+    device_class: connectivity
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
     name: STM32 emergency stop
@@ -274,6 +411,13 @@ number:
 
 switch:
   - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    id: audio_bridge_wifi
+    name: Audio bridge Wi-Fi
+    register_type: holding
+    address: 1
+    bitmask: 0x0001
+  - platform: modbus_controller
     modbus_controller_id: stm32_controller
     id: stm32_motor_enable
     name: Motor enable
@@ -310,3 +454,14 @@ text_sensor:
 button:
   - platform: restart
     name: Restart
+  - platform: template
+    name: Play local Balensiaga
+    on_press:
+      - media_player.repeat_one: wifi_audio_player
+      - lambda: |-
+          auto *file = id(pcm_bridge).get_local_audio_file();
+          if (file != nullptr)
+            id(wifi_audio_player).play_file(file, false, false);
+      - globals.set:
+          id: local_audio_active
+          value: "false"

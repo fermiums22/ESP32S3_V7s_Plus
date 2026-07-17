@@ -1,56 +1,31 @@
-# ESP32S3 V7s Plus
+# ESP32-S3 V7s Plus
 
-Контроллер верхнего уровня домашнего робота на AI-S3 (`ESP32-S3-WROOM-1`).
-ESPHome связывает устройство с Home Assistant, принимает команды и OTA,
-обслуживает STM32 по UART и I2S-аудиовыход штатными компонентами. Для прошивки
-STM32 через его ROM bootloader используется локальный компонент ESPHome;
-кастомная интеграция Home Assistant не нужна. GoPro HERO12 передаёт видео
-и микрофон на сервер напрямую по Wi-Fi.
+Главный контроллер робота `v7s-plus` на ESP32-S3:
 
-## Локальная сборка
+- Wi-Fi, Home Assistant API и OTA;
+- Modbus RTU client для STM32 и ESP32 audio bridge;
+- сетевой PCM-вход `44100 Hz / S16LE / stereo` на TCP 8765;
+- I2S slave TX на GPIO5/GPIO6/GPIO7;
+- управление Wi-Fi audio bridge через Modbus holding register 1.
 
-В репозитории закреплён ESPHome Core `2026.6.5`. Он использует нативный
-ESP-IDF toolchain и сам загружает ту же версию framework и инструментов, что
-ESPHome той же версии в Home Assistant. PlatformIO не используется.
+Bluetooth и GoPro BLE на S3 не используются.
 
-На новом Windows-компьютере нужны Python 3.11–3.14 и Git:
+## Сборка
 
 ```bat
 setup_esphome.bat
 compile.bat
-factory_flash.bat COM9
-flash.bat COM9
-logs.bat COM9
+factory_flash.bat COM15
+flash.bat COM15
+logs.bat COM15
 ```
 
-Локальные пакеты находятся в `.venv`, SDK и результат сборки — в `.esphome`;
-в Git они не попадают. Для полного совпадения версия ESPHome Add-on в HA должна
-быть `2026.6.5`. При обновлении HA меняется одна строка в `requirements.txt`,
-после чего повторно запускается `setup_esphome.bat`.
+Основной конфиг: `v7s-plus.yaml`. ESPHome закреплён в `requirements.txt`.
+Схема межплатных соединений: `Docs/ESP32_BRIDGE_WIRING.md`.
+STM32 и его обновление: `Docs/STM32_UPDATE.md`.
 
-Скопируйте `secrets.example.yaml` в `secrets.yaml` и заполните локальные ключи.
-`secrets.yaml` игнорируется Git. В VS Code доступны задачи `ESPHome: setup`,
-`ESPHome: compile`, `ESPHome: factory flash USB`, `ESPHome: OTA` и
-`ESPHome: logs`.
+Для временной проверки PCM-входа:
 
-## Конфигурация
-
-Основной файл — `v7s-plus.yaml`. Это обычная конфигурация ESPHome: её можно
-собирать локальным Core или тем же ESPHome Add-on в Home Assistant. Сейчас в
-ней включены Wi-Fi, native API, OTA, лог через native USB Serial/JTAG и базовая
-диагностика. Распиновка STM32, исправление BOOT и I2S описаны в
-`Docs/HARDWARE.md`.
-
-`compile.bat` создаёт обычный OTA-образ и полный `factory.bin`, содержащий
-bootloader, partition table и приложение — такой же комплект формирует HA.
-Готовые файлы находятся в `.esphome/build/v7s-plus/build/` под именами
-`firmware.ota.bin`, `firmware.factory.bin` и `firmware.elf`.
-Первый запуск и восстановление выполняются `factory_flash.bat` по USB.
-Последующие версии можно загружать `flash.bat` по USB/OTA либо из HA.
-
-Связь со STM32, Modbus-сущности и порядок обновления нижнего уровня описаны в
-[`Docs/STM32_UPDATE.md`](Docs/STM32_UPDATE.md).
-
-ESP32 является единственным BLE-владельцем GoPro HERO12 и сохраняет управление
-камерой без Wi-Fi и Home Assistant. Первичное сопряжение, сущности HA и контракт
-для будущей ИИ-логики описаны в [`Docs/GOPRO_BLE.md`](Docs/GOPRO_BLE.md).
+```bat
+.venv\Scripts\python tools\stream_mp3.py track.mp3 --host 192.168.0.101
+```

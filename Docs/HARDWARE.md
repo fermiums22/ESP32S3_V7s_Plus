@@ -1,5 +1,36 @@
 # Hardware notes
 
+## Temporary workbench board
+
+**Temporary setup at work:** YD-ESP32-23 / YD-ESP32-S3-compatible board with
+an ESP32-S3-WROOM-1-N16R8 module (16 MB flash, 8 MB octal PSRAM). This board is
+used only until the AI-S3 development board intended for the robot is available
+again. It is not the final hardware revision.
+
+The board has separate `COM` (CH343 USB-to-UART) and `USB` (native USB/JTAG)
+USB-C connectors. GPIO35, GPIO36, and GPIO37 are occupied by octal flash/PSRAM
+and must not be used. The downloaded V1.4 schematic is the closest official
+YD-ESP32-S3 reference; power jumpers and component values may differ on a clone.
+
+### Temporary ESP32-S3 to ESP32 audio bridge
+
+The complete color-coded harness and pre-power checks are documented in
+[`ESP32_BRIDGE_WIRING.md`](ESP32_BRIDGE_WIRING.md).
+
+| Signal | Temporary S3 GPIO | Direction | ESP32-WROOM GPIO |
+|---|---:|:---:|---:|
+| I2S BCLK | 5 | <- | 27 |
+| I2S LRCLK / WS | 6 | <- | 14 |
+| I2S DATA | 7 | -> | 32 |
+| Modbus UART TX | 17 | -> | 16 (RX) |
+| Modbus UART RX | 18 | <- | 17 (TX) |
+| Ground | GND | -- | GND |
+
+The ESP32-WROOM is the I2S clock master and Modbus RTU slave. The temporary S3
+is the I2S data source and Modbus RTU client. GoPro commands and state are
+reserved for this UART bridge so Bluetooth remains disabled on the S3. If both boards are
+powered by USB, do not connect their 5 V or 3.3 V rails.
+
 ## AI-S3 boot strap fix
 
 The AI-S3 schematic has no external pull-up on GPIO0. The board relies on the
@@ -22,21 +53,3 @@ connector goes through CH343 and its DTR/RTS auto-program circuit.
 GPIO1 and GPIO2 can produce a short low-level glitch during ESP32-S3 power-up.
 The proposed external states keep STM32 in normal boot and make a brief reset
 at common power-up harmless.
-
-## Audio output
-
-The first audio option is a MAX98357A-compatible mono I2S class-D amplifier:
-
-| Signal | ESP32-S3 GPIO |
-|---|---:|
-| BCLK | 5 |
-| LRCLK / WS | 6 |
-| DIN | 7 |
-| SD / enable | 4 |
-
-Power the amplifier from a clean 5 V rail, place bulk decoupling near it, and
-use a 4 Ohm speaker rated for at least 3 W. GPIO4 disables the amplifier when
-idle to avoid hiss. The microphone remains in GoPro HERO12 and reaches the
-server over Wi-Fi; while the robot speaks, server-side listening is paused to
-avoid acoustic feedback.
-
