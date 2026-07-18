@@ -46,6 +46,9 @@ logger:
     modbus_controller.number: ERROR
     modbus_controller.switch: ERROR
 
+debug:
+  update_interval: 30s
+
 uart:
   - id: stm32_uart
     tx_pin: GPIO42
@@ -182,6 +185,17 @@ sensor:
   - platform: wifi_signal
     name: Wi-Fi signal
     update_interval: 60s
+  - platform: debug
+    free:
+      name: Heap free
+    block:
+      name: Heap largest block
+    fragmentation:
+      name: Heap fragmentation
+    min_free:
+      name: Heap minimum free
+    loop_time:
+      name: Loop time
   - platform: modbus_controller
     modbus_controller_id: bridge_controller
     id: audio_bridge_heartbeat
@@ -450,6 +464,9 @@ text_sensor:
       name: IP address
   - platform: version
     name: ESPHome version
+  - platform: debug
+    reset_reason:
+      name: Reset reason
 
 button:
   - platform: restart
