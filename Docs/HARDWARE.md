@@ -37,4 +37,6 @@ Wi-Fi media playback is handled by `media_player.v7s_plus_wifi_audio`.
 With Wi-Fi, BLE, Bluetooth Classic A2DP, and continuous PCM active, the
 ESP32-WROOM currently has about 35 kB free heap, a 13.8 kB largest free block,
 and roughly 60% heap fragmentation. Audio testing must watch the debug sensors,
-reset reason, loop time, both `PCM 10 s` counters, and underruns.
+reset reason, loop time, both `PCM 30 s` counters, and underruns. While JBL A2DP
+is connected, the ESP32-WROOM pauses background BLE scanning to avoid sharing
+radio time with the audio stream; scanning resumes after JBL disconnects.

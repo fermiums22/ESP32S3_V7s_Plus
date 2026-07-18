@@ -79,18 +79,25 @@ audio::AudioFile *PcmI2sTx::get_local_audio_file() {
 }
 
 void PcmI2sTx::loop() {
-  if (millis() - this->last_report_ < 10000)
+  if (millis() - this->last_report_ < 30000)
     return;
   this->last_report_ = millis();
   const uint32_t read = this->read_.load(std::memory_order_acquire);
   const uint32_t write = this->write_.load(std::memory_order_acquire);
-  ESP_LOGI(TAG, "PCM 10 s: net=%u i2s=%u fill=%u i2s_nz=%u underruns=%u streaming=%s",
-           static_cast<unsigned>(this->network_bytes_.exchange(0, std::memory_order_relaxed)),
-           static_cast<unsigned>(this->i2s_bytes_.exchange(0, std::memory_order_relaxed)),
-           static_cast<unsigned>(write - read),
-           static_cast<unsigned>(this->i2s_nonzero_.exchange(0, std::memory_order_relaxed)),
-           static_cast<unsigned>(this->underruns_.exchange(0, std::memory_order_relaxed)),
-           YESNO(this->streaming_.load(std::memory_order_acquire)));
+  const uint32_t network = this->network_bytes_.exchange(0, std::memory_order_relaxed);
+  const uint32_t i2s = this->i2s_bytes_.exchange(0, std::memory_order_relaxed);
+  const uint32_t nonzero = this->i2s_nonzero_.exchange(0, std::memory_order_relaxed);
+  const uint32_t underruns = this->underruns_.exchange(0, std::memory_order_relaxed);
+  const bool streaming = this->streaming_.load(std::memory_order_acquire);
+  if (underruns != 0 && streaming) {
+    ESP_LOGW(TAG, "PCM 30 s: net=%u i2s=%u fill=%u i2s_nz=%u underruns=%u streaming=%s",
+             static_cast<unsigned>(network), static_cast<unsigned>(i2s), static_cast<unsigned>(write - read),
+             static_cast<unsigned>(nonzero), static_cast<unsigned>(underruns), YESNO(streaming));
+  } else {
+    ESP_LOGI(TAG, "PCM 30 s: net=%u i2s=%u fill=%u i2s_nz=%u underruns=%u streaming=%s",
+             static_cast<unsigned>(network), static_cast<unsigned>(i2s), static_cast<unsigned>(write - read),
+             static_cast<unsigned>(nonzero), static_cast<unsigned>(underruns), YESNO(streaming));
+  }
 }
 
 void PcmI2sTx::dump_config() {

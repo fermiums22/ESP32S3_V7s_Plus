@@ -34,4 +34,14 @@ STM32 и его обновление: `Docs/STM32_UPDATE.md`.
 этот локальный трек через ESP32 audio bridge.
 
 Для воспроизведения по Wi-Fi используйте сущность Home Assistant
-`media_player.v7s_plus_wifi_audio` и файлы из `/media` Home Assistant.
+`media_player.v7s_plus_wifi_audio` и файлы из `/media/v7s_music` Home Assistant.
+Проверочный путь использует тот же сервис HA, что и интерфейс Home Assistant:
+
+```bat
+play_ha_media.bat Balensiaga.mp3
+play_ha_media.bat "Venjent_-_Dead_(musmore.com).mp3"
+play_ha_media.bat "Venjent_-_Wearing_the_Bass_(musmore.com).mp3"
+```
+
+Скрипт использует локальный Bitvise-профиль `Desktop\hasistant.tlp`; ключи и
+токен Home Assistant в репозиторий не записываются.
