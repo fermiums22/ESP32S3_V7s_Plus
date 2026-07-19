@@ -1,0 +1,4 @@
+open-gopro
+winrt-Windows.Devices.Bluetooth
+winrt-Windows.Devices.Bluetooth.GenericAttributeProfile
+winrt-Windows.Storage.Streams

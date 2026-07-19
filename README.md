@@ -1,47 +1,41 @@
 # ESP32-S3 V7s Plus
 
-Главный контроллер робота `v7s-plus` на ESP32-S3:
+Главный контроллер робота `v7s-plus` на ESP32-S3. Он связывает Home Assistant,
+STM32F071 и отдельный ESP32 audio bridge.
 
-- Wi-Fi, Home Assistant API и OTA;
-- Modbus RTU client для STM32 и ESP32 audio bridge;
-- Wi-Fi audio через ESPHome media player и Home Assistant;
-- I2S slave TX на GPIO5/GPIO6/GPIO7;
-- управление Wi-Fi audio bridge через Modbus holding register 1.
+Главные рабочие инструкции находятся в [Docs/OPERATIONS.md](Docs/OPERATIONS.md):
 
-Bluetooth и GoPro BLE на S3 не используются.
+- как отдельно обновлять STM32 через уже установленный S3;
+- как собирать и обновлять ESP32-S3 и ESP32 audio bridge;
+- как устроены видео GoPro, звук и распознавание речи;
+- какие части являются рабочими, а какие требуют физического доступа к камере.
 
-## Сборка
+`compile.bat` собирает **только ESP32-S3**. Обычное обновление STM32 не требует
+ни пересборки, ни OTA S3: собрать STM32, временно загрузить его `.bin` на S3 и
+нажать кнопку прошивки в Home Assistant.
+
+## Частые команды
 
 ```bat
+:: ESP32-S3
 setup_esphome.bat
 compile.bat
-factory_flash.bat COM23
 flash.bat v7s-plus.local
 logs.bat v7s-plus.local
-flash_audio.bat COM23
+
+:: STM32 — только сборка, S3 не затрагивается
+build_stm32.bat
 ```
 
-Основной конфиг: `v7s-plus.yaml`. ESPHome закреплён в `requirements.txt`.
-Схема межплатных соединений: `Docs/ESP32_BRIDGE_WIRING.md`.
-STM32 и его обновление: `Docs/STM32_UPDATE.md`.
+Основной конфиг S3: `v7s-plus.yaml`. Секреты находятся только в игнорируемом
+`secrets.yaml`; образец ключей — `secrets.example.yaml`.
 
-## Автономный трек
+Схема соединений плат: [Docs/ESP32_BRIDGE_WIRING.md](Docs/ESP32_BRIDGE_WIRING.md).
+Карта железа и звуковой тракт: [Docs/HARDWARE.md](Docs/HARDWARE.md).
 
-`filesystem/Balensiaga.mp3` хранится в отдельном SPIFFS-разделе `audio` размером
-6 MB. `flash_audio.bat COM23` сначала считывает резервную копию раздела в
-`.esphome/backups`, затем записывает и проверяет новый образ. При отсутствии
-подключения Home Assistant кнопка Play/Pause на JBL запускает или приостанавливает
-этот локальный трек через ESP32 audio bridge.
+## Репозиторные правила
 
-Для воспроизведения по Wi-Fi используйте сущность Home Assistant
-`media_player.v7s_plus_wifi_audio` и файлы из `/media/v7s_music` Home Assistant.
-Проверочный путь использует тот же сервис HA, что и интерфейс Home Assistant:
-
-```bat
-play_ha_media.bat Balensiaga.mp3
-play_ha_media.bat "Venjent_-_Dead_(musmore.com).mp3"
-play_ha_media.bat "Venjent_-_Wearing_the_Bass_(musmore.com).mp3"
-```
-
-Скрипт использует локальный Bitvise-профиль `Desktop\hasistant.tlp`; ключи и
-токен Home Assistant в репозиторий не записываются.
+В репозитории не хранятся прошивки, дампы, тестовые обходы, HA-токены,
+пароли Wi-Fi и временные состояния OpenGoPro. Перед коммитом проверяются
+`git diff --check`, сборка изменённой прошивки и отсутствие таких файлов в
+`git status`.

@@ -6,11 +6,10 @@ esphome:
     priority: -100
     then:
       - binary_sensor.template.publish:
-          id: stm32_online
-          state: false
-      - binary_sensor.template.publish:
           id: audio_bridge_online
           state: false
+      - delay: 3s
+      - switch.turn_off: audio_bridge_ota_command
 
 external_components:
   - source:
@@ -72,6 +71,7 @@ modbus:
     uart_id: stm32_uart
     role: client
     send_wait_time: 2ms
+    turnaround_time: 2ms
   - id: bridge_modbus
     uart_id: bridge_uart
     role: client
@@ -83,7 +83,7 @@ modbus_controller:
     address: 1
     modbus_id: stm32_modbus
     command_throttle: 2ms
-    update_interval: 2s
+    update_interval: 500ms
     max_cmd_retries: 0
     offline_skip_updates: 5
     on_online:
@@ -101,6 +101,16 @@ modbus_controller:
     update_interval: 1s
     max_cmd_retries: 1
     offline_skip_updates: 0
+    on_command_sent:
+      - if:
+          condition:
+            lambda: |-
+              return function_code == 6 && address == 1 &&
+                     id(audio_bridge_ota_request_pending);
+          then:
+            - globals.set:
+                id: audio_bridge_ota_request_sent
+                value: "true"
     on_online:
       - binary_sensor.template.publish:
           id: audio_bridge_online
@@ -120,13 +130,24 @@ v7s_stm32_flasher:
     mode:
       output: true
       open_drain: true
-  firmware: ../V7s_Plus/Debug/V7s_Plus.bin
+  upload_token: !secret stm32_upload_token
   flash_button:
-    name: Flash STM32 firmware
+    name: Flash staged STM32 firmware
   progress:
     name: STM32 flash progress
   status:
     name: STM32 flash status
+  upload_status:
+    name: STM32 staging status
+  upload_size:
+    name: STM32 staging size
+
+web_server:
+  port: 80
+  version: 3
+  auth:
+    username: !secret web_server_username
+    password: !secret web_server_password
 
 api:
   encryption:
@@ -135,6 +156,9 @@ api:
 ota:
   - platform: esphome
     password: !secret ota_password
+  # Enables ESP-IDF multipart POST handling used by the STM32 image endpoint.
+  # This also keeps the authenticated web OTA page available as a recovery path.
+  - platform: web_server
 
 wifi:
   ssid: !secret wifi_ssid
@@ -163,6 +187,52 @@ globals:
     type: bool
     restore_value: no
     initial_value: "false"
+  - id: audio_bridge_ota_request_pending
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: audio_bridge_ota_request_sent
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+script:
+  - id: open_audio_bridge_ota_window
+    mode: restart
+    then:
+      - component.resume: bridge_controller
+      - globals.set:
+          id: audio_bridge_ota_request_sent
+          value: "false"
+      - globals.set:
+          id: audio_bridge_ota_request_pending
+          value: "true"
+      - switch.turn_on: audio_bridge_ota_command
+      - wait_until:
+          condition:
+            lambda: return id(audio_bridge_ota_request_sent);
+          timeout: 3s
+      - if:
+          condition:
+            lambda: return id(audio_bridge_ota_request_sent);
+          then:
+            - globals.set:
+                id: audio_bridge_ota_request_pending
+                value: "false"
+            - delay: 100ms
+            - component.suspend: bridge_controller
+            - logger.log: "Audio bridge OTA requested; Modbus polling paused"
+            - delay: 15min
+            - component.resume: bridge_controller
+            - switch.turn_off: audio_bridge_ota_command
+            - logger.log: "Audio bridge OTA window closed; Modbus polling resumed"
+          else:
+            - globals.set:
+                id: audio_bridge_ota_request_pending
+                value: "false"
+            - logger.log:
+                level: WARN
+                format: "Audio bridge did not acknowledge OTA request; Modbus polling stays active"
 
 interval:
   - interval: 1s
@@ -277,12 +347,14 @@ sensor:
     name: STM32 battery current
     register_type: read
     address: 0x0011
-    value_type: U_WORD
+    value_type: S_WORD
     unit_of_measurement: A
     device_class: current
     state_class: measurement
     accuracy_decimals: 3
     filters:
+      - lambda: |-
+          return x > 32767.0f ? x - 65536.0f : x;
       - multiply: 0.001
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
@@ -296,6 +368,99 @@ sensor:
     accuracy_decimals: 3
     filters:
       - multiply: 0.001
+  # Actual DC/DC charge-controller telemetry. Values come from the STM32 PWM
+  # state machine; these replace the one-off GPIO scan diagnostics.
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Charge control status
+    register_type: read
+    address: 0x00B0
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:ev-station
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Charge control state
+    register_type: read
+    address: 0x00B1
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:state-machine
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Charge control fault
+    register_type: read
+    address: 0x00B2
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:alert-octagon-outline
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Charge PWM duty
+    register_type: read
+    address: 0x00B3
+    value_type: U_WORD
+    unit_of_measurement: "‰"
+    state_class: measurement
+    accuracy_decimals: 0
+    icon: mdi:sine-wave
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Charge battery voltage
+    register_type: read
+    address: 0x00B4
+    value_type: U_WORD
+    unit_of_measurement: V
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Charge battery current
+    register_type: read
+    address: 0x00B5
+    value_type: S_WORD
+    unit_of_measurement: A
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Charge input voltage
+    register_type: read
+    address: 0x00B6
+    value_type: U_WORD
+    unit_of_measurement: V
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Charge control sequence
+    register_type: read
+    address: 0x00B7
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:counter
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Auto charge on dock status
+    register_type: read
+    address: 0x00B8
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:battery-sync-outline
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
     name: Front IR left
@@ -314,6 +479,325 @@ sensor:
     register_type: read
     address: 0x0022
     value_type: S_WORD
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR front left activity
+    register_type: read
+    address: 0x0030
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 1
+    icon: mdi:signal
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR front right activity
+    register_type: read
+    address: 0x0031
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 1
+    icon: mdi:signal
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR left activity
+    register_type: read
+    address: 0x0032
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 1
+    icon: mdi:signal
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR right activity
+    register_type: read
+    address: 0x0033
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 1
+    icon: mdi:signal
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR rear activity
+    register_type: read
+    address: 0x0034
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 1
+    icon: mdi:signal
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    id: base_ir_direction_code
+    internal: true
+    register_type: read
+    address: 0x0035
+    value_type: U_WORD
+    on_value:
+      - text_sensor.template.publish:
+          id: base_ir_direction
+          state: !lambda |-
+            const uint16_t direction = static_cast<uint16_t>(x);
+            switch (direction) {
+              case 0: return "Спереди слева";
+              case 1: return "Спереди справа";
+              case 2: return "Слева";
+              case 3: return "Справа";
+              case 4: return "Сзади";
+              default: return "Нет сигнала";
+            }
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR seen mask
+    register_type: read
+    address: 0x0036
+    value_type: U_WORD
+    accuracy_decimals: 0
+    icon: mdi:code-bitwise
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    id: docking_state_code
+    internal: true
+    register_type: read
+    address: 0x0037
+    value_type: U_WORD
+    on_value:
+      - text_sensor.template.publish:
+          id: docking_state
+          state: !lambda |-
+            const uint16_t state = static_cast<uint16_t>(x);
+            switch (state) {
+              case 0: return "Ожидание";
+              case 1: return "Поиск базы";
+              case 2: return "Поворот влево";
+              case 3: return "Поворот вправо";
+              case 4: return "Подъезд к базе";
+              case 5: return "На базе";
+              case 6: return "Остановлен";
+              case 7: return "Ошибка: таймаут";
+              case 8: return "Ошибка: бампер";
+              case 9: return "Ошибка двигателя";
+              default: return "Неизвестно";
+            }
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Docking elapsed
+    register_type: read
+    address: 0x0038
+    value_type: U_WORD
+    unit_of_measurement: s
+    state_class: measurement
+    accuracy_decimals: 0
+    icon: mdi:timer-outline
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Button yellow LED PWM
+    register_type: read
+    address: 0x003A
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 1
+    icon: mdi:led-on
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Button orange LED PWM
+    register_type: read
+    address: 0x003B
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 1
+    icon: mdi:led-on
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture status
+    register_type: read
+    address: 0x0080
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:waveform
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sequence
+    register_type: read
+    address: 0x0081
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:counter
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture count
+    register_type: read
+    address: 0x0082
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:counter
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 01 raw
+    register_type: read
+    address: 0x0083
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 02 raw
+    register_type: read
+    address: 0x0084
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 03 raw
+    register_type: read
+    address: 0x0085
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 04 raw
+    register_type: read
+    address: 0x0086
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 05 raw
+    register_type: read
+    address: 0x0087
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 06 raw
+    register_type: read
+    address: 0x0088
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 07 raw
+    register_type: read
+    address: 0x0089
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 08 raw
+    register_type: read
+    address: 0x008A
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 09 raw
+    register_type: read
+    address: 0x008B
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 10 raw
+    register_type: read
+    address: 0x008C
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 11 raw
+    register_type: read
+    address: 0x008D
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 12 raw
+    register_type: read
+    address: 0x008E
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 13 raw
+    register_type: read
+    address: 0x008F
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 14 raw
+    register_type: read
+    address: 0x0090
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 15 raw
+    register_type: read
+    address: 0x0091
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture sample 16 raw
+    register_type: read
+    address: 0x0092
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:chart-timeline-variant
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
     name: Left wheel speed
@@ -372,6 +856,13 @@ binary_sensor:
     device_class: connectivity
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
+    name: Robot enabled status
+    register_type: read
+    address: 0x0004
+    bitmask: 0x0001
+    icon: mdi:robot-vacuum
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
     name: STM32 emergency stop
     register_type: read
     address: 0x0004
@@ -398,6 +889,58 @@ binary_sensor:
     address: 0x0004
     bitmask: 0x0010
     device_class: problem
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Robot power button
+    register_type: read
+    address: 0x0039
+    bitmask: 0x0002
+    device_class: power
+    icon: mdi:gesture-tap-button
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Left bumper pressed
+    register_type: read
+    address: 0x003C
+    bitmask: 0x0001
+    device_class: safety
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Right bumper pressed
+    register_type: read
+    address: 0x003C
+    bitmask: 0x0002
+    device_class: safety
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Left bumper latched
+    register_type: read
+    address: 0x003C
+    bitmask: 0x0100
+    device_class: problem
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Right bumper latched
+    register_type: read
+    address: 0x003C
+    bitmask: 0x0200
+    device_class: problem
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Docking active
+    register_type: read
+    address: 0x0004
+    bitmask: 0x0040
+    icon: mdi:home-import-outline
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Robot docked
+    register_type: read
+    address: 0x0004
+    bitmask: 0x0080
+    device_class: battery_charging
 
 number:
   - platform: modbus_controller
@@ -422,19 +965,54 @@ number:
     step: 1
     multiply: 10
     unit_of_measurement: rpm
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Button yellow LED brightness
+    register_type: holding
+    address: 0x0102
+    value_type: U_WORD
+    min_value: 0
+    max_value: 100
+    step: 1
+    multiply: 10
+    unit_of_measurement: "%"
+    icon: mdi:brightness-percent
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Button orange LED brightness
+    register_type: holding
+    address: 0x0103
+    value_type: U_WORD
+    min_value: 0
+    max_value: 100
+    step: 1
+    multiply: 10
+    unit_of_measurement: "%"
+    icon: mdi:brightness-percent
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base IR capture channel
+    register_type: holding
+    address: 0x0104
+    value_type: U_WORD
+    min_value: 0
+    max_value: 4
+    step: 1
+    icon: mdi:tune-variant
+    entity_category: diagnostic
 
 switch:
   - platform: modbus_controller
     modbus_controller_id: bridge_controller
-    id: audio_bridge_wifi
-    name: Audio bridge Wi-Fi
+    id: audio_bridge_ota_command
+    internal: true
     register_type: holding
     address: 1
     bitmask: 0x0001
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
     id: stm32_motor_enable
-    name: Motor enable
+    name: Robot enabled
     register_type: coil
     address: 0
   - platform: modbus_controller
@@ -457,8 +1035,49 @@ switch:
     name: IR illumination
     register_type: coil
     address: 3
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    id: stm32_charge_control_enable
+    name: Manual charge override
+    register_type: coil
+    address: 7
+    restore_mode: ALWAYS_OFF
+    icon: mdi:battery-charging-outline
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    id: stm32_auto_charge_enable
+    name: Auto charge on dock
+    register_type: coil
+    address: 8
+    restore_mode: ALWAYS_ON
+    icon: mdi:battery-sync-outline
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    id: dock_robot
+    name: Dock robot
+    register_type: coil
+    address: 4
+    icon: mdi:home-import-outline
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    id: base_ir_capture_command
+    internal: true
+    register_type: coil
+    address: 5
+    assumed_state: true
+    on_turn_on:
+      - delay: 100ms
+      - switch.turn_off: base_ir_capture_command
 
 text_sensor:
+  - platform: template
+    id: docking_state
+    name: Docking state
+    icon: mdi:robot-vacuum
+  - platform: template
+    id: base_ir_direction
+    name: Base IR direction
+    icon: mdi:compass-outline
   - platform: wifi_info
     ip_address:
       name: IP address
@@ -471,6 +1090,28 @@ text_sensor:
 button:
   - platform: restart
     name: Restart
+  - platform: template
+    name: Capture base IR waveform
+    icon: mdi:waveform
+    entity_category: diagnostic
+    on_press:
+      - switch.turn_on: base_ir_capture_command
+  - platform: template
+    name: Open audio bridge OTA window
+    icon: mdi:update
+    on_press:
+      - script.execute: open_audio_bridge_ota_window
+  - platform: template
+    name: Close audio bridge OTA window
+    icon: mdi:close-network-outline
+    on_press:
+      - script.stop: open_audio_bridge_ota_window
+      - globals.set:
+          id: audio_bridge_ota_request_pending
+          value: "false"
+      - component.resume: bridge_controller
+      - switch.turn_off: audio_bridge_ota_command
+      - logger.log: "Audio bridge OTA window closed manually; Modbus polling resumed"
   - platform: template
     name: Play local Balensiaga
     on_press:

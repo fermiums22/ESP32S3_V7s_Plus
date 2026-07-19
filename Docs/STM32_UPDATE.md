@@ -1,27 +1,57 @@
-# STM32 communication and update
+# Обновление STM32 через ESP32-S3
 
-The STM32F071 is a Modbus RTU slave at address `1`. The application link uses
-USART1 at `921600 8N1`: ESP32 GPIO42 TX to STM32 PA10 RX, and ESP32 GPIO41 RX
-from STM32 PA9 TX.
+STM32F071 — Modbus RTU slave с адресом `1`. Связь: USART1 `921600 8N1`;
+ESP32-S3 GPIO42 TX → STM32 PA10 RX и ESP32-S3 GPIO41 RX ← STM32 PA9 TX.
 
-Home Assistant talks only to the ESPHome native API. Standard ESPHome Modbus
-Controller entities expose STM32 sensors, motor commands and safety controls
-inside the `V7s Plus` device. No custom Home Assistant integration is needed.
+## Главное правило
 
-`compile.bat` first builds the adjacent `..\V7s_Plus` STM32 project and embeds
-`Debug\V7s_Plus.bin` in the ESP32 image. STM32CubeIDE 2.0.0 is expected at the
-default `C:\ST` path. For another install path, set `STM32CUBEIDE` to the full
-path of `stm32cubeidec.exe`.
+`compile.bat` собирает только ESP32-S3. Для обычного изменения STM32 **не
+пересобирать и не обновлять S3**. S3 получает только один временный файл STM32,
+прошивает его и удаляет.
 
-Update sequence:
+## Нормальный путь
 
-1. Change and test the STM32 C code.
-2. Run ESP32 `compile.bat`, then upload the ESP32 image by OTA.
-3. In Home Assistant press `Flash STM32 firmware` on the `V7s Plus` device.
+1. Изменить STM32-проект в `D:\w_space\V7s_Plus`. Если менялись назначение
+   выводов, таймеры или периферия — сначала изменить `.ioc`, сгенерировать
+   CubeMX-код, затем собрать Debug.
 
-The ESP32 disables the motors, pauses Modbus, raises STM32 BOOT0 on GPIO1,
-pulses the open-drain NRST on GPIO2, writes and verifies the embedded image via
-the STM32 ROM bootloader at `230400 8E1`, then restarts the application and
-resumes Modbus. Flash progress and status are exposed as HA entities.
+2. В этом репозитории собрать только STM32:
 
-The complete register map is in `..\V7s_Plus\docs\modbus-registers.md`.
+   ```bat
+   build_stm32.bat
+   ```
+
+   Скрипт всегда создаёт новый `..\V7s_Plus\Debug\V7s_Plus.bin` из только что
+   слинкованного ELF — старый BIN не может быть случайно отправлен.
+
+3. Загрузить BIN во временное хранилище уже работающего S3. Значения берутся
+   из локального `secrets.yaml`, не записываются в историю команд и не
+   коммитятся.
+
+   ```powershell
+   .\tools\upload_stm32_firmware.ps1 `
+     -TargetHost v7s-plus.local `
+     -Token '<stm32_upload_token>' `
+     -Username '<web_server_username>' `
+     -Password '<web_server_password>'
+   ```
+
+4. В Home Assistant убедиться, что `STM32 staging status` сообщает `staged
+   image ready`, затем нажать `Flash staged STM32 firmware`.
+
+S3 проверяет размер, CRC32 и векторную таблицу STM32F0. Файл существует лишь
+до перезагрузки S3 или до завершения попытки прошивки — и при успехе, и при
+ошибке он удаляется. В S3 нет встроенного BIN, двух слотов, fallback-образа или
+постоянного хранения STM32-прошивки.
+
+## Когда обновляется S3
+
+Только когда изменены `v7s-plus.yaml`, компоненты ESPHome или разделы S3:
+
+```bat
+compile.bat
+flash.bat v7s-plus.local
+```
+
+После OTA S3 временный STM32-файл пуст по проекту. Это не ошибка: для STM32
+нужно повторно собрать/загрузить актуальный BIN перед нажатием кнопки.
