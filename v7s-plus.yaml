@@ -101,16 +101,6 @@ modbus_controller:
     update_interval: 1s
     max_cmd_retries: 1
     offline_skip_updates: 0
-    on_command_sent:
-      - if:
-          condition:
-            lambda: |-
-              return function_code == 6 && address == 1 &&
-                     id(audio_bridge_ota_request_pending);
-          then:
-            - globals.set:
-                id: audio_bridge_ota_request_sent
-                value: "true"
     on_online:
       - binary_sensor.template.publish:
           id: audio_bridge_online
@@ -187,52 +177,20 @@ globals:
     type: bool
     restore_value: no
     initial_value: "false"
-  - id: audio_bridge_ota_request_pending
-    type: bool
-    restore_value: no
-    initial_value: "false"
-  - id: audio_bridge_ota_request_sent
-    type: bool
-    restore_value: no
-    initial_value: "false"
 
 script:
   - id: open_audio_bridge_ota_window
     mode: restart
     then:
       - component.resume: bridge_controller
-      - globals.set:
-          id: audio_bridge_ota_request_sent
-          value: "false"
-      - globals.set:
-          id: audio_bridge_ota_request_pending
-          value: "true"
       - switch.turn_on: audio_bridge_ota_command
-      - wait_until:
-          condition:
-            lambda: return id(audio_bridge_ota_request_sent);
-          timeout: 3s
-      - if:
-          condition:
-            lambda: return id(audio_bridge_ota_request_sent);
-          then:
-            - globals.set:
-                id: audio_bridge_ota_request_pending
-                value: "false"
-            - delay: 100ms
-            - component.suspend: bridge_controller
-            - logger.log: "Audio bridge OTA requested; Modbus polling paused"
-            - delay: 15min
-            - component.resume: bridge_controller
-            - switch.turn_off: audio_bridge_ota_command
-            - logger.log: "Audio bridge OTA window closed; Modbus polling resumed"
-          else:
-            - globals.set:
-                id: audio_bridge_ota_request_pending
-                value: "false"
-            - logger.log:
-                level: WARN
-                format: "Audio bridge did not acknowledge OTA request; Modbus polling stays active"
+      - delay: 2s
+      - component.suspend: bridge_controller
+      - logger.log: "Audio bridge OTA requested; Modbus polling paused"
+      - delay: 15min
+      - component.resume: bridge_controller
+      - switch.turn_off: audio_bridge_ota_command
+      - logger.log: "Audio bridge OTA window closed; Modbus polling resumed"
 
 interval:
   - interval: 1s
@@ -357,6 +315,100 @@ sensor:
           return x > 32767.0f ? x - 65536.0f : x;
       - multiply: 0.001
   - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    id: gopro_status_flags
+    internal: true
+    register_type: holding
+    address: 11
+    value_type: U_WORD
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    name: GoPro battery
+    register_type: holding
+    address: 12
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    device_class: battery
+    state_class: measurement
+    accuracy_decimals: 0
+    icon: mdi:battery
+    filters:
+      - lambda: |-
+          if (x >= 65535.0f) return {};
+          return x;
+  - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    id: gopro_live_stream_state_code
+    internal: true
+    register_type: holding
+    address: 13
+    value_type: U_WORD
+    accuracy_decimals: 0
+    on_value:
+      - text_sensor.template.publish:
+          id: gopro_live_stream_state
+          state: !lambda |-
+            switch (static_cast<uint16_t>(x)) {
+              case 0: return "Idle";
+              case 1: return "Configuring";
+              case 2: return "Ready";
+              case 3: return "Streaming";
+              case 4: return "Complete";
+              case 5: return "Failed";
+              case 6: return "Reconnecting";
+              case 7: return "Unavailable";
+              default: return "Unknown";
+            }
+  - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    name: GoPro command sequence
+    register_type: holding
+    address: 14
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    id: jbl_battery_status_code
+    internal: true
+    register_type: holding
+    address: 3
+    value_type: U_WORD
+    accuracy_decimals: 0
+    on_value:
+      - text_sensor.template.publish:
+          id: jbl_battery_status
+          state: !lambda |-
+            switch (static_cast<uint16_t>(x)) {
+              case 0: return "Normal";
+              case 1: return "Low";
+              case 2: return "Critical";
+              case 3: return "External power";
+              case 4: return "Full";
+              default: return "Not reported";
+            }
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    id: robot_status_word
+    internal: true
+    register_type: read
+    address: 0x0004
+    value_type: U_WORD
+    accuracy_decimals: 0
+    on_value:
+      - text_sensor.template.publish:
+          id: robot_state
+          state: !lambda |-
+            const uint16_t flags = static_cast<uint16_t>(x);
+            if (flags & 0x0002) return "Emergency stop";
+            if (flags & 0x0018) return "Motor fault";
+            if (flags & 0x0004) return "Bumper stop";
+            if (flags & 0x0080) return "Docked";
+            if (flags & 0x0040) return "Docking";
+            if (flags & 0x0001) return "Running";
+            return "Paused";
+  - platform: modbus_controller
     modbus_controller_id: stm32_controller
     name: STM32 dock voltage
     register_type: read
@@ -479,6 +531,101 @@ sensor:
     register_type: read
     address: 0x0022
     value_type: S_WORD
+    icon: mdi:radar
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Front IR left rate
+    register_type: read
+    address: 0x0023
+    value_type: S_WORD
+    entity_category: diagnostic
+    icon: mdi:trending-up
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Front IR center rate
+    register_type: read
+    address: 0x0024
+    value_type: S_WORD
+    entity_category: diagnostic
+    icon: mdi:trending-up
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Front IR right rate
+    register_type: read
+    address: 0x0025
+    value_type: S_WORD
+    entity_category: diagnostic
+    icon: mdi:trending-up
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Cliff front left
+    register_type: read
+    address: 0x0040
+    value_type: S_WORD
+    icon: mdi:stairs-down
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Cliff front right
+    register_type: read
+    address: 0x0041
+    value_type: S_WORD
+    icon: mdi:stairs-down
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Cliff right
+    register_type: read
+    address: 0x0042
+    value_type: S_WORD
+    icon: mdi:stairs-down
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Cliff left
+    register_type: read
+    address: 0x0043
+    value_type: S_WORD
+    icon: mdi:stairs-down
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Side proximity
+    register_type: read
+    address: 0x0044
+    value_type: S_WORD
+    icon: mdi:radar
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Cliff front left rate
+    register_type: read
+    address: 0x0048
+    value_type: S_WORD
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Cliff front right rate
+    register_type: read
+    address: 0x0049
+    value_type: S_WORD
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Cliff right rate
+    register_type: read
+    address: 0x004A
+    value_type: S_WORD
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Cliff left rate
+    register_type: read
+    address: 0x004B
+    value_type: S_WORD
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Side proximity rate
+    register_type: read
+    address: 0x004C
+    value_type: S_WORD
+    entity_category: diagnostic
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
     name: Base IR front left activity
@@ -629,177 +776,6 @@ sensor:
       - multiply: 0.1
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
-    name: Base IR capture status
-    register_type: read
-    address: 0x0080
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:waveform
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sequence
-    register_type: read
-    address: 0x0081
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:counter
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture count
-    register_type: read
-    address: 0x0082
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:counter
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 01 raw
-    register_type: read
-    address: 0x0083
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 02 raw
-    register_type: read
-    address: 0x0084
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 03 raw
-    register_type: read
-    address: 0x0085
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 04 raw
-    register_type: read
-    address: 0x0086
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 05 raw
-    register_type: read
-    address: 0x0087
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 06 raw
-    register_type: read
-    address: 0x0088
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 07 raw
-    register_type: read
-    address: 0x0089
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 08 raw
-    register_type: read
-    address: 0x008A
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 09 raw
-    register_type: read
-    address: 0x008B
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 10 raw
-    register_type: read
-    address: 0x008C
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 11 raw
-    register_type: read
-    address: 0x008D
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 12 raw
-    register_type: read
-    address: 0x008E
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 13 raw
-    register_type: read
-    address: 0x008F
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 14 raw
-    register_type: read
-    address: 0x0090
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 15 raw
-    register_type: read
-    address: 0x0091
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture sample 16 raw
-    register_type: read
-    address: 0x0092
-    value_type: U_WORD
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    icon: mdi:chart-timeline-variant
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
     name: Left wheel speed
     register_type: read
     address: 0x0061
@@ -855,12 +831,85 @@ binary_sensor:
     name: STM32 online
     device_class: connectivity
   - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    id: jbl_connected_modbus
+    name: JBL Go 3 connected
+    register_type: holding
+    address: 4
+    bitmask: 0x0001
+    device_class: connectivity
+  - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    name: JBL audio stream active
+    register_type: holding
+    address: 4
+    bitmask: 0x0002
+    icon: mdi:speaker-wireless
+  - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    name: JBL PCM audio present
+    register_type: holding
+    address: 4
+    bitmask: 0x0004
+    icon: mdi:waveform
+  - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    id: gopro_ble_connected_modbus
+    name: GoPro connected
+    register_type: holding
+    address: 11
+    bitmask: 0x0001
+    device_class: connectivity
+  - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    id: gopro_streaming_modbus
+    name: GoPro streaming
+    register_type: holding
+    address: 11
+    bitmask: 0x0020
+    icon: mdi:broadcast
+  - platform: modbus_controller
     modbus_controller_id: stm32_controller
     name: Robot enabled status
     register_type: read
     address: 0x0004
     bitmask: 0x0001
     icon: mdi:robot-vacuum
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base seen front left
+    register_type: read
+    address: 0x0036
+    bitmask: 0x0001
+    icon: mdi:signal
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base seen front right
+    register_type: read
+    address: 0x0036
+    bitmask: 0x0002
+    icon: mdi:signal
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base seen left
+    register_type: read
+    address: 0x0036
+    bitmask: 0x0004
+    icon: mdi:signal
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base seen right
+    register_type: read
+    address: 0x0036
+    bitmask: 0x0008
+    icon: mdi:signal
+  - platform: modbus_controller
+    modbus_controller_id: stm32_controller
+    name: Base seen rear
+    register_type: read
+    address: 0x0036
+    bitmask: 0x0010
+    icon: mdi:signal
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
     name: STM32 emergency stop
@@ -944,6 +993,16 @@ binary_sensor:
 
 number:
   - platform: modbus_controller
+    modbus_controller_id: bridge_controller
+    id: gopro_command_register
+    internal: true
+    register_type: holding
+    address: 10
+    value_type: U_WORD
+    min_value: 0
+    max_value: 8
+    step: 1
+  - platform: modbus_controller
     modbus_controller_id: stm32_controller
     name: Left wheel target
     register_type: holding
@@ -967,6 +1026,7 @@ number:
     unit_of_measurement: rpm
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
+    id: button_yellow_brightness
     name: Button yellow LED brightness
     register_type: holding
     address: 0x0102
@@ -979,6 +1039,7 @@ number:
     icon: mdi:brightness-percent
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
+    id: button_orange_brightness
     name: Button orange LED brightness
     register_type: holding
     address: 0x0103
@@ -989,19 +1050,33 @@ number:
     multiply: 10
     unit_of_measurement: "%"
     icon: mdi:brightness-percent
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    name: Base IR capture channel
-    register_type: holding
-    address: 0x0104
-    value_type: U_WORD
-    min_value: 0
-    max_value: 4
-    step: 1
-    icon: mdi:tune-variant
-    entity_category: diagnostic
-
 switch:
+  - platform: template
+    id: gopro_power_control
+    name: GoPro power
+    icon: mdi:camera
+    lambda: return id(gopro_ble_connected_modbus).state;
+    turn_on_action:
+      - number.set:
+          id: gopro_command_register
+          value: 1
+    turn_off_action:
+      - number.set:
+          id: gopro_command_register
+          value: 2
+  - platform: template
+    id: gopro_stream_control
+    name: GoPro stream
+    icon: mdi:broadcast
+    lambda: return id(gopro_streaming_modbus).state;
+    turn_on_action:
+      - number.set:
+          id: gopro_command_register
+          value: 3
+    turn_off_action:
+      - number.set:
+          id: gopro_command_register
+          value: 4
   - platform: modbus_controller
     modbus_controller_id: bridge_controller
     id: audio_bridge_ota_command
@@ -1012,7 +1087,7 @@ switch:
   - platform: modbus_controller
     modbus_controller_id: stm32_controller
     id: stm32_motor_enable
-    name: Robot enabled
+    name: Robot run
     register_type: coil
     address: 0
   - platform: modbus_controller
@@ -1058,18 +1133,19 @@ switch:
     register_type: coil
     address: 4
     icon: mdi:home-import-outline
-  - platform: modbus_controller
-    modbus_controller_id: stm32_controller
-    id: base_ir_capture_command
-    internal: true
-    register_type: coil
-    address: 5
-    assumed_state: true
-    on_turn_on:
-      - delay: 100ms
-      - switch.turn_off: base_ir_capture_command
-
 text_sensor:
+  - platform: template
+    id: robot_state
+    name: Robot state
+    icon: mdi:robot-vacuum
+  - platform: template
+    id: gopro_live_stream_state
+    name: GoPro stream state
+    icon: mdi:camera-wireless
+  - platform: template
+    id: jbl_battery_status
+    name: JBL Go 3 battery status
+    icon: mdi:battery-bluetooth
   - platform: template
     id: docking_state
     name: Docking state
@@ -1091,12 +1167,6 @@ button:
   - platform: restart
     name: Restart
   - platform: template
-    name: Capture base IR waveform
-    icon: mdi:waveform
-    entity_category: diagnostic
-    on_press:
-      - switch.turn_on: base_ir_capture_command
-  - platform: template
     name: Open audio bridge OTA window
     icon: mdi:update
     on_press:
@@ -1106,12 +1176,23 @@ button:
     icon: mdi:close-network-outline
     on_press:
       - script.stop: open_audio_bridge_ota_window
-      - globals.set:
-          id: audio_bridge_ota_request_pending
-          value: "false"
       - component.resume: bridge_controller
       - switch.turn_off: audio_bridge_ota_command
       - logger.log: "Audio bridge OTA window closed manually; Modbus polling resumed"
+  - platform: template
+    name: GoPro connect home 5 GHz
+    icon: mdi:wifi
+    on_press:
+      - number.set:
+          id: gopro_command_register
+          value: 5
+  - platform: template
+    name: GoPro refresh state
+    icon: mdi:refresh
+    on_press:
+      - number.set:
+          id: gopro_command_register
+          value: 6
   - platform: template
     name: Play local Balensiaga
     on_press:
@@ -1123,3 +1204,32 @@ button:
       - globals.set:
           id: local_audio_active
           value: "false"
+
+select:
+  - platform: template
+    name: Robot button color
+    id: robot_button_color
+    icon: mdi:palette
+    optimistic: true
+    restore_value: false
+    options:
+      - "Off"
+      - "Yellow"
+      - "Orange"
+      - "Amber"
+    set_action:
+      - lambda: |-
+          float yellow = 0.0f;
+          float orange = 0.0f;
+          if (x == "Yellow") yellow = 60.0f;
+          else if (x == "Orange") orange = 60.0f;
+          else if (x == "Amber") {
+            yellow = 45.0f;
+            orange = 45.0f;
+          }
+          auto yellow_call = id(button_yellow_brightness).make_call();
+          yellow_call.set_value(yellow);
+          yellow_call.perform();
+          auto orange_call = id(button_orange_brightness).make_call();
+          orange_call.set_value(orange);
+          orange_call.perform();
