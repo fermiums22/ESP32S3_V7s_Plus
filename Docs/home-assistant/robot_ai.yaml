@@ -1,0 +1,198 @@
+input_text:
+  robot_ai_last_vision:
+    name: Robot AI last vision
+    max: 255
+  robot_ai_last_status:
+    name: Robot AI last status
+    max: 255
+
+automation:
+  - id: robot_ai_announce_robot_state
+    alias: "Robot AI: announce robot state"
+    description: Озвучивает только устойчивые значимые изменения состояния робота.
+    mode: restart
+    triggers:
+      - trigger: state
+        entity_id: sensor.v7s_plus_robot_state
+        for:
+          seconds: 1
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state is not none
+             and trigger.from_state is not none
+             and trigger.to_state.state != trigger.from_state.state
+             and trigger.to_state.state in
+               ['Paused', 'Running', 'Docking', 'Docked',
+                'Motor fault', 'Emergency stop', 'Bumper stop'] }}
+    actions:
+      - variables:
+          announcement: >-
+            {% set messages = {
+              'Paused': 'Робот на паузе.',
+              'Running': 'Робот начал движение.',
+              'Docking': 'Робот ищет базу и заезжает на зарядку.',
+              'Docked': 'Робот на базе.',
+              'Motor fault': 'Ошибка привода. Движение заблокировано.',
+              'Emergency stop': 'Аварийная остановка.',
+              'Bumper stop': 'Бампер сработал. Робот остановлен.'
+            } %}
+            {{ messages[trigger.to_state.state] }}
+      - action: tts.speak
+        target:
+          entity_id: tts.piper
+        data:
+          media_player_entity_id: media_player.v7s_plus_wifi_audio
+          message: "{{ announcement }}"
+          cache: true
+
+script:
+  robot_mirror_mission:
+    alias: "Robot AI: mirror mission"
+    description: >-
+      Safety gate for the future dock-to-mirror-to-dock mission. It never writes
+      raw wheel targets and will not move until a calibrated navigation action exists.
+    icon: mdi:shield-robot-outline
+    mode: single
+    sequence:
+      - variables:
+          left_fault: "{{ is_state('binary_sensor.v7s_plus_left_motor_fault', 'on') }}"
+          right_fault: "{{ is_state('binary_sensor.v7s_plus_right_motor_fault', 'on') }}"
+          emergency: "{{ is_state('binary_sensor.v7s_plus_stm32_emergency_stop', 'on') }}"
+          bumper: >-
+            {{ is_state('binary_sensor.v7s_plus_bumper_hit', 'on')
+               or is_state('binary_sensor.v7s_plus_left_bumper_pressed', 'on')
+               or is_state('binary_sensor.v7s_plus_right_bumper_pressed', 'on') }}
+          charge_active: >-
+            {{ is_state('binary_sensor.v7s_plus_robot_docked', 'on')
+               or states('sensor.v7s_plus_charge_pwm_duty') | float(0) > 0
+               or states('sensor.v7s_plus_stm32_dock_voltage') | float(0) > 12
+               or states('sensor.v7s_plus_stm32_battery_current') | float(0) < -0.05 }}
+      - variables:
+          blocked: >-
+            {{ left_fault or right_fault or emergency or bumper or charge_active }}
+          block_reason: >-
+            {% set reasons = [] %}
+            {% if left_fault %}{% set reasons = reasons + ['ошибка левого двигателя'] %}{% endif %}
+            {% if right_fault %}{% set reasons = reasons + ['ошибка правого двигателя'] %}{% endif %}
+            {% if emergency %}{% set reasons = reasons + ['аварийная остановка'] %}{% endif %}
+            {% if bumper %}{% set reasons = reasons + ['нажат бампер'] %}{% endif %}
+            {% if charge_active %}{% set reasons = reasons + ['активна зарядка или робот находится у дока'] %}{% endif %}
+            {{ reasons | join(', ') }}
+      - if:
+          - condition: template
+            value_template: "{{ blocked }}"
+        then:
+          - action: tts.speak
+            target:
+              entity_id: tts.piper
+            data:
+              media_player_entity_id: media_player.v7s_plus_wifi_audio
+              message: "Миссия к зеркалу заблокирована: {{ block_reason }}. Движение не запускаю."
+              cache: true
+          - action: persistent_notification.create
+            data:
+              notification_id: robot_mirror_mission
+              title: Миссия робота заблокирована
+              message: "{{ block_reason }}. Движение не запускалось."
+          - stop: Safety guard blocked the mirror mission
+        else:
+          - action: persistent_notification.create
+            data:
+              notification_id: robot_mirror_mission
+              title: Миссия робота ожидает навигацию
+              message: >-
+                Проверка безопасности пройдена, но маршрут до зеркала ещё не
+                откалиброван. Скорости колёс не изменялись, движение не запускалось.
+          - action: tts.speak
+            target:
+              entity_id: tts.piper
+            data:
+              media_player_entity_id: media_player.v7s_plus_wifi_audio
+              message: >-
+                Проверка безопасности пройдена, но маршрут до зеркала не
+                откалиброван. Движение не запускаю.
+              cache: true
+
+  robot_ai_describe_gopro:
+    alias: "Robot AI: describe GoPro frame"
+    icon: mdi:eye-outline
+    mode: single
+    sequence:
+      - if:
+          - condition: template
+            value_template: >-
+              {{ states('camera.192_168_0_4') not in ['unknown', 'unavailable'] }}
+        then:
+          - action: ai_task.generate_data
+            data:
+              entity_id: ai_task.openai_ai_task
+              task_name: Describe current GoPro robot frame
+              instructions: >-
+                Кратко, в одном-двух предложениях и без догадок опиши по-русски,
+                что сейчас видно перед роботом. Отдельно назови заметное препятствие,
+                если оно есть. Если кадр темный или неразборчивый, так и скажи.
+              attachments:
+                - media_content_id: media-source://camera/camera.192_168_0_4
+                  media_content_type: image/jpeg
+            response_variable: vision
+          - variables:
+              spoken_vision: >-
+                {{ vision.data | default('Не удалось получить описание кадра.', true) }}
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.robot_ai_last_vision
+            data:
+              value: "{{ spoken_vision | truncate(255, true, '') }}"
+          - action: tts.speak
+            target:
+              entity_id: tts.piper
+            data:
+              media_player_entity_id: media_player.v7s_plus_wifi_audio
+              message: "{{ spoken_vision }}"
+              cache: true
+        else:
+          - variables:
+              spoken_vision: "Поток GoPro сейчас не активен."
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.robot_ai_last_vision
+            data:
+              value: "{{ spoken_vision }}"
+          - action: tts.speak
+            target:
+              entity_id: tts.piper
+            data:
+              media_player_entity_id: media_player.v7s_plus_wifi_audio
+              message: "{{ spoken_vision }}"
+              cache: true
+
+  robot_ai_speak_status:
+    alias: "Robot AI: speak robot status"
+    icon: mdi:robot-outline
+    mode: restart
+    sequence:
+      - variables:
+          status_text: >-
+            Робот: {{ states('sensor.v7s_plus_robot_state') }}.
+            Левый двигатель: {{ 'ошибка' if is_state('binary_sensor.v7s_plus_left_motor_fault', 'on') else 'норма' }},
+            правый: {{ 'ошибка' if is_state('binary_sensor.v7s_plus_right_motor_fault', 'on') else 'норма' }}.
+            Батарея {{ states('sensor.v7s_plus_stm32_battery_voltage') | float(0) | round(2) }} вольт,
+            ток {{ states('sensor.v7s_plus_stm32_battery_current') | float(0) | round(2) }} ампера,
+            док {{ states('sensor.v7s_plus_stm32_dock_voltage') | float(0) | round(2) }} вольт.
+            Гоу Про {{ 'подключена к контроллеру' if is_state('binary_sensor.v7s_plus_gopro_connected', 'on') else 'не подтверждена контроллером' }},
+            камера в Хоум Ассистент {{ 'доступна' if states('camera.192_168_0_4') not in ['unknown', 'unavailable'] else 'недоступна' }}.
+            База {{ 'видна спереди' if is_state('binary_sensor.v7s_plus_base_seen_front_left', 'on') or is_state('binary_sensor.v7s_plus_base_seen_front_right', 'on') else 'спереди не видна' }}.
+            Бампер {{ 'нажат' if is_state('binary_sensor.v7s_plus_bumper_hit', 'on') else 'свободен' }}.
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.robot_ai_last_status
+        data:
+          value: "{{ status_text | truncate(255, true, '') }}"
+      - action: tts.speak
+        target:
+          entity_id: tts.piper
+        data:
+          media_player_entity_id: media_player.v7s_plus_wifi_audio
+          message: "{{ status_text }}"
+          cache: true
