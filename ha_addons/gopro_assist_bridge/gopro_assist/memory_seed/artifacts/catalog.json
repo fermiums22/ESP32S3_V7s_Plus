@@ -1,0 +1,4 @@
+{
+  "artifacts": [],
+  "note": "Seed only. Runtime locations and their complete observation history are stored in world.db."
+}

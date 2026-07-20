@@ -6,6 +6,32 @@ input_text:
     name: Robot AI last status
     max: 255
 
+# A normal vacuum-domain entity is easier for Home Assistant voice satellites
+# and Yandex/Alice bridges to expose than the low-level ESPHome switches.
+template:
+  - vacuum:
+      - name: "Сокол-9"
+        unique_id: sokol_9_robot
+        default_entity_id: vacuum.sokol_9
+        state: >-
+          {% set robot = states('sensor.v7s_plus_robot_state') %}
+          {% if robot == 'Docked' %} docked
+          {% elif robot == 'Docking' %} returning
+          {% elif robot == 'Running' %} cleaning
+          {% elif robot in ['Motor fault', 'Emergency stop', 'Bumper stop'] %} error
+          {% else %} idle
+          {% endif %}
+        start:
+          action: switch.turn_on
+          target:
+            entity_id: switch.v7s_plus_robot_run
+        stop:
+          action: switch.turn_off
+          target:
+            entity_id: switch.v7s_plus_robot_run
+        return_to_base:
+          action: script.sokol_9_go_home
+
 automation:
   - id: robot_ai_announce_robot_state
     alias: "Robot AI: announce robot state"
@@ -46,7 +72,42 @@ automation:
           message: "{{ announcement }}"
           cache: true
 
+  - id: sokol_9_sleep_on_dock
+    alias: "Сокол-9: сон на базе"
+    description: Останавливает видеопоток и усыпляет GoPro после подтверждённой стыковки.
+    mode: restart
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.v7s_plus_robot_docked
+        to: "on"
+        for:
+          seconds: 5
+    actions:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.v7s_plus_gopro_stream
+      - delay:
+          seconds: 2
+      - action: switch.turn_off
+        target:
+          entity_id: switch.v7s_plus_gopro_power
+
 script:
+  sokol_9_go_home:
+    alias: "Сокол-9: домой"
+    icon: mdi:home-import-outline
+    mode: restart
+    sequence:
+      - if:
+          - condition: state
+            entity_id: binary_sensor.v7s_plus_robot_docked
+            state: "on"
+        then:
+          - stop: Robot is already docked
+      - action: switch.turn_on
+        target:
+          entity_id: switch.v7s_plus_dock_robot
+
   robot_mirror_mission:
     alias: "Robot AI: mirror mission"
     description: >-
@@ -122,7 +183,7 @@ script:
       - if:
           - condition: template
             value_template: >-
-              {{ states('camera.192_168_0_4') not in ['unknown', 'unavailable'] }}
+              {{ states('camera.robot_eyes') not in ['unknown', 'unavailable'] }}
         then:
           - action: ai_task.generate_data
             data:
@@ -133,7 +194,7 @@ script:
                 что сейчас видно перед роботом. Отдельно назови заметное препятствие,
                 если оно есть. Если кадр темный или неразборчивый, так и скажи.
               attachments:
-                - media_content_id: media-source://camera/camera.192_168_0_4
+                - media_content_id: media-source://camera/camera.robot_eyes
                   media_content_type: image/jpeg
             response_variable: vision
           - variables:
@@ -181,7 +242,7 @@ script:
             ток {{ states('sensor.v7s_plus_stm32_battery_current') | float(0) | round(2) }} ампера,
             док {{ states('sensor.v7s_plus_stm32_dock_voltage') | float(0) | round(2) }} вольт.
             Гоу Про {{ 'подключена к контроллеру' if is_state('binary_sensor.v7s_plus_gopro_connected', 'on') else 'не подтверждена контроллером' }},
-            камера в Хоум Ассистент {{ 'доступна' if states('camera.192_168_0_4') not in ['unknown', 'unavailable'] else 'недоступна' }}.
+            камера в Хоум Ассистент {{ 'доступна' if states('camera.robot_eyes') not in ['unknown', 'unavailable'] else 'недоступна' }}.
             База {{ 'видна спереди' if is_state('binary_sensor.v7s_plus_base_seen_front_left', 'on') or is_state('binary_sensor.v7s_plus_base_seen_front_right', 'on') else 'спереди не видна' }}.
             Бампер {{ 'нажат' if is_state('binary_sensor.v7s_plus_bumper_hit', 'on') else 'свободен' }}.
       - action: input_text.set_value

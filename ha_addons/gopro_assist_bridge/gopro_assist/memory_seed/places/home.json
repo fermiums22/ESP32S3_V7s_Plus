@@ -1,0 +1,12 @@
+{
+  "map_source": "Xiaomi Robot Vacuum X20+ LDS map via Home Assistant",
+  "rooms": [
+    {"id": "bedroom", "name": "Спальня"},
+    {"id": "office", "name": "Офис"},
+    {"id": "nursery", "name": "Детская"},
+    {"id": "living_room", "name": "Гостиная"},
+    {"id": "main_entrance", "name": "Главный вход"},
+    {"id": "corridor", "name": "Коридор"},
+    {"id": "kitchen", "name": "Кухня"}
+  ]
+}

@@ -1,9 +1,8 @@
 """GoPro RTSP microphone to Home Assistant Assist bridge.
 
-This process deliberately has no robot motor, OTA, firmware, Modbus, or raw
-device endpoints.  Commands are submitted only to the configured Home
-Assistant Conversation pipeline, so Home Assistant's exposed-entity policy is
-the safety boundary.  The only service called directly is ``tts.speak``.
+By default commands are submitted to the configured Home Assistant Conversation
+pipeline.  The optional direct-agent mode uses the OpenAI Responses API and may
+read entities, call Home Assistant services, and inspect one robot camera frame.
 """
 
 from __future__ import annotations
@@ -26,6 +25,18 @@ from typing import Any
 import aiohttp
 import websockets
 
+from .agent import (
+    AgentConfig,
+    BudgetExceeded,
+    HomeAssistantTools,
+    OpenAIAgent,
+    SemanticEventJournal,
+    WORLD_DB_PATH,
+)
+from .speaker_id import SpeakerProfiles
+from .visual_places import VisualPlaceStore
+from .memory import MEMORY_DB_PATH, MEMORY_ROOT, WorldMemory
+
 
 LOGGER = logging.getLogger("gopro_assist")
 OPTIONS_PATH = Path("/data/options.json")
@@ -35,6 +46,10 @@ SAMPLE_RATE = 16_000
 SAMPLE_WIDTH = 2
 CHUNK_MS = 20
 CHUNK_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * CHUNK_MS // 1000
+SPEAKER_PROFILES_PATH = Path("/data/speaker_profiles.json")
+VISUAL_PLACES_PATH = MEMORY_ROOT / "vision" / "places"
+BUILTIN_PROMPT_PATH = Path(__file__).with_name("SOKOL9_SYSTEM_PROMPT.md")
+SOL_ADDENDUM_PATH = Path(__file__).with_name("prompts") / "SOL_ROUTING_ADDENDUM.md"
 
 
 @dataclass(frozen=True)
@@ -48,6 +63,15 @@ class Config:
     tts_entity: str
     media_player: str
     language: str
+    agent_enabled: bool
+    agent: AgentConfig
+    robot_event_entities: tuple[str, ...]
+    follow_distance_entities: tuple[str, str, str]
+    follow_left_wheel_entity: str
+    follow_right_wheel_entity: str
+    follow_run_entity: str
+    follow_safety_entities: tuple[str, ...]
+    place_odometry_entities: tuple[str, ...]
     vad_start_rms: int
     vad_end_rms: int
     vad_noise_multiplier: float
@@ -60,13 +84,29 @@ class Config:
     @classmethod
     def load(cls) -> "Config":
         raw = json.loads(OPTIONS_PATH.read_text(encoding="utf-8"))
+        system_prompt = str(raw.get("agent_system_prompt", "@builtin")).strip()
+        if system_prompt in {"", "@builtin"}:
+            system_prompt = BUILTIN_PROMPT_PATH.read_text(encoding="utf-8").strip()
+            system_prompt += "\n\n" + SOL_ADDENDUM_PATH.read_text(encoding="utf-8").strip()
         phrases = tuple(
             phrase.strip().casefold()
-            for phrase in str(raw.get("wake_phrases", "робот,фермиум")).split(",")
+            for phrase in str(raw.get("wake_phrases", "сокол девять,сокол")).split(",")
             if phrase.strip()
         )
         if not phrases:
             raise ValueError("wake_phrases must contain at least one phrase")
+        distance_entities = tuple(
+            item.strip()
+            for item in str(raw.get(
+                "follow_distance_entities",
+                "sensor.v7s_plus_front_distance_left,"
+                "sensor.v7s_plus_front_distance_center,"
+                "sensor.v7s_plus_front_distance_right",
+            )).split(",")
+            if item.strip()
+        )
+        if len(distance_entities) != 3:
+            raise ValueError("follow_distance_entities must contain left,center,right")
         start = int(raw.get("vad_start_rms", 700))
         end = int(raw.get("vad_end_rms", 400))
         if start <= 0 or end <= 0 or end >= start:
@@ -81,6 +121,65 @@ class Config:
             tts_entity=str(raw.get("tts_entity", "tts.piper")),
             media_player=str(raw["media_player"]),
             language=str(raw.get("language", "ru_RU")),
+            agent_enabled=bool(raw.get("agent_enabled", False)),
+            agent=AgentConfig(
+                api_key=str(raw.get("openai_api_key", "")).strip(),
+                model=str(raw.get("agent_model", "gpt-4o-mini")).strip(),
+                system_prompt=system_prompt,
+                max_output_tokens=max(32, int(raw.get("agent_max_output_tokens", 250))),
+                history_turns=max(0, int(raw.get("agent_history_turns", 6))),
+                max_tool_rounds=max(0, int(raw.get("agent_max_tool_rounds", 4))),
+                daily_limit_usd=max(0.0, float(raw.get("agent_daily_limit_usd", 0.25))),
+                monthly_limit_usd=max(0.0, float(raw.get("agent_monthly_limit_usd", 3.0))),
+                request_reserve_usd=max(0.0, float(raw.get("agent_request_reserve_usd", 0.01))),
+                input_usd_per_million=max(0.0, float(raw.get("agent_input_usd_per_million", 0.15))),
+                cached_input_usd_per_million=max(0.0, float(raw.get("agent_cached_input_usd_per_million", 0.075))),
+                output_usd_per_million=max(0.0, float(raw.get("agent_output_usd_per_million", 0.60))),
+                camera_entity=str(raw.get("camera_entity", "camera.robot_eyes")).strip(),
+                home_map_entity=str(raw.get("home_map_entity", "")).strip(),
+                telemetry_entities=tuple(
+                    item.strip()
+                    for item in str(raw.get("camera_telemetry_entities", "")).split(",")
+                    if item.strip()
+                ),
+            ),
+            robot_event_entities=tuple(
+                item.strip()
+                for item in str(raw.get("robot_event_entities", "")).split(",")
+                if item.strip()
+            ),
+            follow_distance_entities=distance_entities,  # type: ignore[arg-type]
+            follow_left_wheel_entity=str(raw.get(
+                "follow_left_wheel_entity", "number.v7s_plus_left_wheel_target"
+            )).strip(),
+            follow_right_wheel_entity=str(raw.get(
+                "follow_right_wheel_entity", "number.v7s_plus_right_wheel_target"
+            )).strip(),
+            follow_run_entity=str(raw.get(
+                "follow_run_entity", "switch.v7s_plus_robot_run"
+            )).strip(),
+            follow_safety_entities=tuple(
+                item.strip()
+                for item in str(raw.get(
+                    "follow_safety_entities",
+                    "binary_sensor.v7s_plus_bumper_hit,"
+                    "binary_sensor.v7s_plus_left_motor_fault,"
+                    "binary_sensor.v7s_plus_right_motor_fault,"
+                    "binary_sensor.v7s_plus_stm32_emergency_stop,"
+                    "binary_sensor.v7s_plus_robot_docked",
+                )).split(",")
+                if item.strip()
+            ),
+            place_odometry_entities=tuple(
+                item.strip()
+                for item in str(raw.get(
+                    "place_odometry_entities",
+                    "sensor.v7s_plus_left_wheel_position,"
+                    "sensor.v7s_plus_right_wheel_position,"
+                    "sensor.v7s_plus_caster_odometry",
+                )).split(",")
+                if item.strip()
+            ),
             vad_start_rms=start,
             vad_end_rms=end,
             vad_noise_multiplier=float(raw.get("vad_noise_multiplier", 3.0)),
@@ -361,6 +460,41 @@ class HomeAssistantClient:
             LOGGER.debug("state read failed entity=%s: %s", entity_id, err)
             return None
 
+    async def call_service(
+        self, domain: str, service: str, entity_id: str | list[str]
+    ) -> None:
+        assert self.session is not None
+        payload: dict[str, Any] = {"entity_id": entity_id}
+        async with self.session.post(
+            f"{HA_HTTP}/services/{domain}/{service}", json=payload
+        ) as response:
+            if response.status >= 300:
+                body = await response.text()
+                raise RuntimeError(
+                    f"{domain}.{service} failed status={response.status}: {body[:500]}"
+                )
+
+    async def set_number(self, entity_id: str, value: int) -> None:
+        assert self.session is not None
+        async with self.session.post(
+            f"{HA_HTTP}/services/number/set_value",
+            json={"entity_id": entity_id, "value": value},
+        ) as response:
+            if response.status >= 300:
+                body = await response.text()
+                raise RuntimeError(
+                    f"number.set_value failed status={response.status}: {body[:500]}"
+                )
+
+    async def camera_image(self, entity_id: str) -> bytes:
+        assert self.session is not None
+        async with self.session.get(f"{HA_HTTP}/camera_proxy/{entity_id}") as response:
+            response.raise_for_status()
+            image = await response.read()
+        if not image or len(image) > 8 * 1024 * 1024:
+            raise RuntimeError("invalid camera image size")
+        return image
+
     async def run_stt(self, audio: bytes) -> str:
         result = await self._run_pipeline("stt", "stt", audio=audio)
         return str(result.get("transcript", "")).strip()
@@ -493,6 +627,63 @@ def strip_wake_phrase(text: str, phrases: tuple[str, ...]) -> tuple[bool, str]:
     return False, text
 
 
+def local_robot_command(text: str) -> str | None:
+    normalized = re.sub(r"[^а-яa-z0-9]+", " ", text.casefold().replace("ё", "е")).strip()
+    if re.search(
+        r"\b(езжай|поезжай|едь|иди|вернись|возвращайся)\s+(домой|на базу)\b",
+        normalized,
+    ) or normalized in {"домой", "на базу"}:
+        return "home"
+    if re.search(r"\b(езжай|поезжай|следуй|иди)\s+за\s+мной\b", normalized):
+        return "follow"
+    if normalized in {"стой", "стоп", "остановись", "хватит", "не езди за мной"}:
+        return "stop"
+    return None
+
+
+def speaker_enrollment_name(text: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", text.casefold().replace("ё", "е")).strip(" ,.:;!?")
+    match = re.fullmatch(
+        r"запомни мой голос(?: как| я| это)? ([а-яa-z0-9 -]{2,24})", normalized
+    )
+    return match.group(1).strip().title() if match else None
+
+
+def place_enrollment_label(text: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", text.casefold().replace("ё", "е")).strip(" ,.:;!?")
+    match = re.fullmatch(r"запомни (?:это )?место ([а-яa-z0-9 -]{2,32})", normalized)
+    return match.group(1).strip().title() if match else None
+
+
+def is_location_query(text: str) -> bool:
+    normalized = re.sub(r"[^а-яa-z]+", " ", text.casefold().replace("ё", "е")).strip()
+    return normalized in {
+        "где мы", "где ты", "в какой мы комнате", "определи место",
+        "определи где мы", "определи свое местоположение",
+    }
+
+
+def follow_wheel_targets(
+    left_cm: float | None, center_cm: float | None, right_cm: float | None
+) -> tuple[int, int]:
+    distances = [left_cm, center_cm, right_cm]
+    valid = [(zone, value) for zone, value in enumerate(distances)
+             if value is not None and math.isfinite(value) and 5.0 <= value <= 150.0]
+    if not valid:
+        return 0, 0
+    zone, distance = min(valid, key=lambda item: item[1])
+    if center_cm is not None and math.isfinite(center_cm) and center_cm <= distance + 10.0:
+        zone, distance = 1, center_cm
+    if distance <= 55.0:
+        return 0, 0
+    speed = min(22, max(4, round((distance - 55.0) * 0.45)))
+    if zone == 0:
+        return round(speed * 0.45), speed
+    if zone == 2:
+        return speed, round(speed * 0.45)
+    return speed, speed
+
+
 class Bridge:
     def __init__(self, config: Config, ha: HomeAssistantClient) -> None:
         self.config = config
@@ -501,8 +692,198 @@ class Bridge:
         self.processing_task: asyncio.Task[None] | None = None
         self.suppress_until = 0.0
         self.speaker_active = False
+        self.follow_enabled = False
+        self.follow_last_targets: tuple[int, int] | None = None
         self.stop_event = asyncio.Event()
         self.last_metrics = 0.0
+        self.events = SemanticEventJournal(path=WORLD_DB_PATH)
+        self.memory = WorldMemory(database=MEMORY_DB_PATH)
+        self.speaker_profiles = SpeakerProfiles(SPEAKER_PROFILES_PATH)
+        self.visual_places = VisualPlaceStore(VISUAL_PLACES_PATH)
+        self.agent = (
+            OpenAIAgent(
+                config.agent,
+                ha.session,
+                HomeAssistantTools(ha.session, HA_HTTP),
+                ha.set_sensor,
+                self.events,
+                self.memory,
+            )
+            if config.agent_enabled and ha.session is not None
+            else None
+        )
+
+    async def set_wheels(self, left: int, right: int) -> None:
+        targets = (left, right)
+        if targets == self.follow_last_targets:
+            return
+        await asyncio.gather(
+            self.ha.set_number(self.config.follow_left_wheel_entity, left),
+            self.ha.set_number(self.config.follow_right_wheel_entity, right),
+        )
+        self.follow_last_targets = targets
+
+    async def stop_following(self, disable_drive: bool = True) -> None:
+        self.follow_enabled = False
+        try:
+            await self.set_wheels(0, 0)
+        finally:
+            if disable_drive:
+                await self.ha.call_service(
+                    "switch", "turn_off", self.config.follow_run_entity
+                )
+        await self.ha.set_sensor("sensor.sokol_9_follow_state", "off")
+
+    async def monitor_following(self) -> None:
+        lost_cycles = 0
+        while not self.stop_event.is_set():
+            if not self.follow_enabled:
+                await asyncio.sleep(0.2)
+                continue
+            safety_states = await asyncio.gather(*(
+                self.ha.get_state(entity) for entity in self.config.follow_safety_entities
+            ))
+            blocked = next((entity for entity, state in zip(
+                self.config.follow_safety_entities, safety_states
+            ) if state != "off"), None)
+            if blocked:
+                await self.stop_following()
+                await self.ha.set_sensor(
+                    "sensor.sokol_9_follow_state", "blocked", {"entity_id": blocked}
+                )
+                continue
+            raw_distances = await asyncio.gather(*(
+                self.ha.get_state(entity) for entity in self.config.follow_distance_entities
+            ))
+            distances: list[float | None] = []
+            for value in raw_distances:
+                try:
+                    distances.append(float(value) if value is not None else None)
+                except ValueError:
+                    distances.append(None)
+            targets = follow_wheel_targets(*distances)
+            has_target = any(
+                value is not None and math.isfinite(value) and 5.0 <= value <= 150.0
+                for value in distances
+            )
+            if targets == (0, 0) and not has_target:
+                lost_cycles += 1
+            else:
+                lost_cycles = 0
+            await self.set_wheels(*targets)
+            await self.ha.set_sensor(
+                "sensor.sokol_9_follow_state",
+                "target_lost" if lost_cycles else "following",
+                {"distance_cm": distances, "wheel_rpm": list(targets)},
+            )
+            if lost_cycles >= 6:
+                await self.stop_following()
+                continue
+            await asyncio.sleep(0.5)
+
+    async def handle_local_robot_command(self, command: str) -> str | None:
+        action = local_robot_command(command)
+        if action == "home":
+            self.follow_enabled = False
+            try:
+                await self.set_wheels(0, 0)
+            except Exception as err:
+                LOGGER.warning("wheel zero before docking failed: %s", err)
+            await self.ha.call_service("script", "turn_on", "script.sokol_9_go_home")
+            return "Возвращаюсь на базу."
+        if action == "follow":
+            self.follow_enabled = False
+            await self.set_wheels(0, 0)
+            await self.ha.call_service("switch", "turn_on", self.config.follow_run_entity)
+            self.follow_enabled = True
+            await self.ha.set_sensor("sensor.sokol_9_follow_state", "following")
+            return "Еду за тобой. Оставайся передо мной."
+        if action == "stop":
+            await self.stop_following()
+            return "Остановился."
+        return None
+
+    async def enroll_visual_place(self, label: str) -> str:
+        image = await self.ha.camera_image(self.config.agent.camera_entity)
+        values = await asyncio.gather(*(
+            self.ha.get_state(entity) for entity in self.config.place_odometry_entities
+        ))
+        odometry = dict(zip(self.config.place_odometry_entities, values))
+        await self.visual_places.enroll(label, image, odometry=odometry)
+        count = self.visual_places.count(label)
+        await self.ha.set_sensor(
+            "sensor.sokol_9_location", label,
+            {"learning": True, "reference_frames": count, "odometry": odometry},
+        )
+        return f"Запомнил место {label}. Кадр {count}."
+
+    async def identify_visual_place(self) -> str:
+        if not self.visual_places.entries:
+            return "Каталог мест пока пуст. Сначала скажи: запомни место и название."
+        image = await self.ha.camera_image(self.config.agent.camera_entity)
+        matches = await self.visual_places.match(image)
+        best = matches[0]
+        score = float(best["similarity"])
+        margin = score - float(matches[1]["similarity"]) if len(matches) > 1 else score
+        confident = score >= 0.80 and margin >= 0.025
+        label = str(best["label"]) if confident else "unknown"
+        await self.ha.set_sensor(
+            "sensor.sokol_9_location", label,
+            {"confidence": round(score, 3), "margin": round(margin, 3),
+             "candidates": matches},
+        )
+        if confident:
+            return f"Похоже, мы в месте {best['label']}."
+        candidates = ", ".join(str(item["label"]) for item in matches[:2])
+        return f"Не уверен. Ближайшие варианты: {candidates}."
+
+    async def monitor_robot_events(self) -> None:
+        watched = set(self.config.robot_event_entities)
+        if not watched:
+            return
+        retry_seconds = 2
+        while not self.stop_event.is_set():
+            try:
+                ws = await self.ha.ws_connect()
+                message_id = self.ha.next_id()
+                await ws.send(json.dumps({
+                    "id": message_id,
+                    "type": "subscribe_events",
+                    "event_type": "state_changed",
+                }))
+                reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                if not reply.get("success"):
+                    raise RuntimeError(f"cannot subscribe state events: {reply.get('error')}")
+                retry_seconds = 2
+                try:
+                    while not self.stop_event.is_set():
+                        message = json.loads(await asyncio.wait_for(ws.recv(), timeout=60))
+                        event = message.get("event") or {}
+                        data = event.get("data") or {}
+                        entity_id = str(data.get("entity_id", ""))
+                        if entity_id not in watched:
+                            continue
+                        old = data.get("old_state") or {}
+                        new = data.get("new_state") or {}
+                        self.events.record(
+                            entity_id,
+                            str(old.get("state", "unknown")),
+                            str(new.get("state", "unknown")),
+                            str(new.get("last_changed") or event.get("time_fired") or ""),
+                        )
+                finally:
+                    await ws.close()
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                LOGGER.warning("robot event monitor failed: %s", err)
+                try:
+                    await asyncio.wait_for(self.stop_event.wait(), timeout=retry_seconds)
+                except asyncio.TimeoutError:
+                    pass
+                retry_seconds = min(30, retry_seconds * 2)
 
     async def monitor_media_player(self) -> None:
         """Block microphone VAD while any audio is emitted by the robot."""
@@ -561,7 +942,51 @@ class Bridge:
             LOGGER.info("wake phrase accepted command=%s", command or "<empty>")
             if command:
                 await self.ha.set_sensor("sensor.gopro_assist_status", "thinking")
-                response = await self.ha.run_intent(command)
+                enrollment_name = speaker_enrollment_name(command)
+                place_label = place_enrollment_label(command)
+                location_query = is_location_query(command)
+                speaker_match = None if enrollment_name else self.speaker_profiles.identify(audio)
+                if enrollment_name:
+                    try:
+                        samples = self.speaker_profiles.enroll(enrollment_name, audio)
+                        await self.ha.set_sensor(
+                            "sensor.sokol_9_speaker", enrollment_name,
+                            {"enrollment_samples": samples},
+                        )
+                        response = (
+                            f"Голос {enrollment_name} записан. "
+                            f"Образец {samples} из трёх."
+                        )
+                    except ValueError:
+                        response = "Не хватило чистого голоса. Повтори фразу ближе ко мне."
+                else:
+                    speaker_name = speaker_match[0] if speaker_match else "unknown"
+                    speaker_distance = speaker_match[1] if speaker_match else None
+                    await self.ha.set_sensor(
+                        "sensor.sokol_9_speaker", speaker_name,
+                        {"distance": speaker_distance},
+                    )
+                    if place_label:
+                        response = await self.enroll_visual_place(place_label)
+                    elif location_query:
+                        response = await self.identify_visual_place()
+                    else:
+                        response = await self.handle_local_robot_command(command)
+                if enrollment_name:
+                    LOGGER.info("local speaker enrollment handled without cloud agent")
+                elif response is not None:
+                    LOGGER.info("local robot command handled without cloud agent")
+                elif self.agent is not None:
+                    try:
+                        prompt = (
+                            f"[Говорит: {speaker_match[0]}] {command}"
+                            if speaker_match else command
+                        )
+                        response = await self.agent.ask(prompt)
+                    except BudgetExceeded:
+                        response = "Лимит расходов достигнут. Облачный агент отключён."
+                else:
+                    response = await self.ha.run_intent(command)
             else:
                 response = "Слушаю."
             if not response:
@@ -684,6 +1109,8 @@ class Bridge:
 
     async def run(self) -> None:
         media_task = asyncio.create_task(self.monitor_media_player())
+        event_task = asyncio.create_task(self.monitor_robot_events())
+        follow_task = asyncio.create_task(self.monitor_following())
         try:
             retry_seconds = 2
             while not self.stop_event.is_set():
@@ -707,9 +1134,17 @@ class Bridge:
                         pass
                     retry_seconds = min(30, retry_seconds * 2)
         finally:
+            with contextlib.suppress(Exception):
+                await self.stop_following()
             media_task.cancel()
+            event_task.cancel()
+            follow_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await media_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await event_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await follow_task
 
 
 async def async_main() -> None:
@@ -734,6 +1169,8 @@ async def async_main() -> None:
             loop.add_signal_handler(signum, bridge.stop_event.set)
         await ha.set_sensor("sensor.gopro_assist_transcript", "waiting")
         await ha.set_sensor("sensor.gopro_assist_response", "waiting")
+        if config.agent_enabled:
+            await bridge.agent._publish_usage()  # type: ignore[union-attr]
         await bridge.run()
 
 

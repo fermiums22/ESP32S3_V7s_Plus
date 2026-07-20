@@ -18,5 +18,7 @@ config/
 *.log
 __pycache__/
 *.pyc
+dist/
+tools/sokol9_home_probe.json
 Thumbs.db
 Desktop.ini

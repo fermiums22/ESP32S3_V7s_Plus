@@ -1,0 +1,12 @@
+{
+  "people": [
+    {"id": "viktor", "name": "Виктор", "role": "creator_owner", "recognition": "enroll_voice_and_face"},
+    {"id": "wife", "name": "Жена Виктора", "role": "adult_owner", "recognition": "enroll_voice_and_face"},
+    {"id": "daughter", "name": "Дочка", "role": "child_family", "recognition": "enroll_voice_and_face"}
+  ],
+  "assistants": [
+    {"id": "alisa", "name": "Алиса", "role": "voice_assistant"},
+    {"id": "mika", "name": "Мика", "role": "xiaomi_x20_plus"}
+  ],
+  "guests": {"default_role": "guest", "private_memory_access": false}
+}

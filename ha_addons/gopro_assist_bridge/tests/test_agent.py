@@ -1,0 +1,249 @@
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from array import array
+import json
+import math
+import sys
+import types
+import unittest
+
+try:
+    import aiohttp  # noqa: F401
+except ModuleNotFoundError:
+    sys.modules["aiohttp"] = types.SimpleNamespace(ClientSession=object)
+try:
+    import websockets  # noqa: F401
+except ModuleNotFoundError:
+    sys.modules["websockets"] = types.SimpleNamespace()
+
+from gopro_assist.agent import (
+    AgentConfig,
+    BudgetExceeded,
+    OpenAIAgent,
+    SemanticEventJournal,
+    UsageLedger,
+)
+from gopro_assist.main import (
+    BUILTIN_PROMPT_PATH,
+    SOL_ADDENDUM_PATH,
+    follow_wheel_targets,
+    is_location_query,
+    local_robot_command,
+    place_enrollment_label,
+    speaker_enrollment_name,
+)
+from gopro_assist.speaker_id import SpeakerProfiles
+from gopro_assist.visual_places import signature_from_gray, similarity
+from gopro_assist.memory import WorldMemory
+
+
+CONFIG = AgentConfig(
+    api_key="test",
+    model="gpt-4o-mini",
+    system_prompt="test",
+    max_output_tokens=250,
+    history_turns=6,
+    max_tool_rounds=4,
+    daily_limit_usd=0.25,
+    monthly_limit_usd=3.0,
+    request_reserve_usd=0.01,
+    input_usd_per_million=0.15,
+    cached_input_usd_per_million=0.075,
+    output_usd_per_million=0.60,
+    camera_entity="camera.robot_eyes",
+    home_map_entity="",
+    telemetry_entities=("sensor.v7s_plus_robot_state",),
+)
+
+
+class UsageLedgerTest(unittest.TestCase):
+    def test_counts_tokens_and_cost(self) -> None:
+        with TemporaryDirectory() as directory:
+            ledger = UsageLedger(Path(directory) / "usage.json")
+            ledger.add({
+                "input_tokens": 1000,
+                "output_tokens": 500,
+                "input_tokens_details": {"cached_tokens": 400},
+            }, CONFIG)
+            today = ledger.data["today"]
+            self.assertEqual(today["requests"], 1)
+            self.assertEqual(today["input_tokens"], 1000)
+            self.assertEqual(today["cached_tokens"], 400)
+            self.assertEqual(today["output_tokens"], 500)
+            self.assertAlmostEqual(today["cost_usd"], 0.00042)
+
+    def test_reserve_blocks_request_before_limit(self) -> None:
+        with TemporaryDirectory() as directory:
+            ledger = UsageLedger(Path(directory) / "usage.json")
+            ledger.data["today"]["cost_usd"] = 0.245
+            with self.assertRaises(BudgetExceeded):
+                ledger.ensure_allowed(CONFIG)
+
+    def test_zero_limit_disables_that_limit(self) -> None:
+        with TemporaryDirectory() as directory:
+            ledger = UsageLedger(Path(directory) / "usage.json")
+            ledger.data["today"]["cost_usd"] = 100
+            ledger.data["this_month"]["cost_usd"] = 100
+            ledger.ensure_allowed(replace(CONFIG, daily_limit_usd=0, monthly_limit_usd=0))
+
+
+class ResponseParsingTest(unittest.TestCase):
+    def test_extracts_all_output_text_chunks(self) -> None:
+        response = {"output": [{"type": "message", "content": [
+            {"type": "output_text", "text": "Привет"},
+            {"type": "output_text", "text": ", Виктор"},
+        ]}]}
+        self.assertEqual(OpenAIAgent._output_text(response), "Привет, Виктор")
+
+
+class LocalRobotControlTest(unittest.TestCase):
+    def test_sol_and_luna_prompts_define_single_voice_and_hard_limiter(self) -> None:
+        sol = SOL_ADDENDUM_PATH.read_text(encoding="utf-8")
+        luna = SOL_ADDENDUM_PATH.with_name("LUNA_SYSTEM_PROMPT.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("only model allowed to speak as Sokol-9", sol)
+        self.assertIn("deterministic limiter", luna)
+
+    def test_builtin_persona_covers_household_roles(self) -> None:
+        prompt = BUILTIN_PROMPT_PATH.read_text(encoding="utf-8")
+        for role in ("Виктор", "Жена", "Дочка", "Алиса", "Мика", "гост"):
+            self.assertIn(role.casefold(), prompt.casefold())
+        self.assertIn("сырые скорости", prompt)
+
+    def test_local_commands_do_not_need_agent(self) -> None:
+        self.assertEqual(local_robot_command("езжай домой"), "home")
+        self.assertEqual(local_robot_command("следуй за мной"), "follow")
+        self.assertEqual(local_robot_command("остановись"), "stop")
+        self.assertIsNone(local_robot_command("какая погода дома"))
+
+    def test_follow_targets_are_slow_and_directional(self) -> None:
+        self.assertEqual(follow_wheel_targets(None, None, None), (0, 0))
+        self.assertEqual(follow_wheel_targets(40, None, None), (0, 0))
+        left_turn = follow_wheel_targets(90, None, 130)
+        self.assertLess(left_turn[0], left_turn[1])
+        straight = follow_wheel_targets(100, 80, 100)
+        self.assertEqual(straight[0], straight[1])
+        self.assertLessEqual(straight[0], 22)
+
+    def test_speaker_enrollment_phrase(self) -> None:
+        self.assertEqual(
+            speaker_enrollment_name("запомни мой голос я виктор"), "Виктор"
+        )
+        self.assertIsNone(speaker_enrollment_name("виктор говорит"))
+
+    def test_visual_place_phrases(self) -> None:
+        self.assertEqual(place_enrollment_label("запомни место кухня"), "Кухня")
+        self.assertTrue(is_location_query("в какой мы комнате"))
+        self.assertFalse(is_location_query("какая комната больше"))
+
+
+class SpeakerProfilesTest(unittest.TestCase):
+    @staticmethod
+    def _tone(frequency: float) -> bytes:
+        samples = array("h", (
+            round(5000 * math.sin(2 * math.pi * frequency * index / 16000))
+            for index in range(24000)
+        ))
+        return samples.tobytes()
+
+    def test_enrolls_and_separates_two_pitch_profiles(self) -> None:
+        with TemporaryDirectory() as directory:
+            profiles = SpeakerProfiles(Path(directory) / "speakers.json")
+            profiles.enroll("Виктор", self._tone(120))
+            profiles.enroll("Дочка", self._tone(240))
+            self.assertEqual(profiles.identify(self._tone(120))[0], "Виктор")
+            self.assertEqual(profiles.identify(self._tone(240))[0], "Дочка")
+
+
+class VisualPlaceSignatureTest(unittest.TestCase):
+    def test_same_room_signature_scores_higher_than_different_layout(self) -> None:
+        left_dark = bytes(30 if index % 32 < 16 else 220 for index in range(32 * 18))
+        noisy = bytearray(left_dark)
+        for index in range(0, len(noisy), 53):
+            noisy[index] = 120
+        horizontal = bytes(30 if index // 32 < 9 else 220 for index in range(32 * 18))
+        reference = signature_from_gray(left_dark)
+        self.assertGreater(
+            similarity(reference, signature_from_gray(bytes(noisy))),
+            similarity(reference, signature_from_gray(horizontal)),
+        )
+
+
+class SemanticEventJournalTest(unittest.TestCase):
+    def test_bumper_release_is_ignored_and_press_has_meaning(self) -> None:
+        journal = SemanticEventJournal()
+        journal.record("sensor.v7s_plus_robot_state", "Paused", "Running", "t0")
+        journal.record("binary_sensor.v7s_plus_left_bumper_pressed", "off", "on", "t1")
+        journal.record("binary_sensor.v7s_plus_left_bumper_pressed", "on", "off", "t2")
+        events = journal.since_last_frame()
+        self.assertIn('"event":"motion_started"', events)
+        self.assertIn('"event":"collision"', events)
+        self.assertIn('"side":"left"', events)
+        self.assertIn('"while":"Running"', events)
+        self.assertNotIn("t2", events)
+
+    def test_frame_cursor_returns_only_new_events(self) -> None:
+        journal = SemanticEventJournal()
+        journal.record("binary_sensor.v7s_plus_robot_docked", "off", "on", "t1")
+        self.assertIn('"event":"docked"', journal.since_last_frame())
+        self.assertEqual(journal.since_last_frame(), "[]")
+
+    def test_proximity_event_is_semantic(self) -> None:
+        journal = SemanticEventJournal()
+        journal.record(
+            "sensor.v7s_plus_proximity_event",
+            "stopped:center;strength=0;seq=4",
+            "approaching:left;strength=91;seq=5",
+            "t1",
+        )
+        event = json.loads(journal.recent())[0]
+        self.assertEqual(event["event"], "object_approaching")
+        self.assertEqual(event["zones"], ["left"])
+        self.assertEqual(event["strength"], 91)
+        self.assertEqual(event["seq"], 5)
+
+    def test_events_and_state_survive_restart(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "world.db"
+            first = SemanticEventJournal(path=path)
+            first.record("sensor.v7s_plus_robot_state", "Paused", "Running", "t0")
+            first.record("binary_sensor.v7s_plus_right_bumper_pressed", "off", "on", "t1")
+            second = SemanticEventJournal(path=path)
+            self.assertEqual(second.robot_state, "Running")
+            recent = second.recent()
+            self.assertIn('"event":"motion_started"', recent)
+            self.assertIn('"side":"right"', recent)
+
+
+class WorldMemoryTest(unittest.TestCase):
+    def test_layout_and_seed_are_created(self) -> None:
+        with TemporaryDirectory() as directory:
+            memory = WorldMemory(Path(directory))
+            self.assertTrue((memory.root / "identity" / "personality.md").is_file())
+            self.assertTrue((memory.root / "vision" / "people" / "viktor").is_dir())
+            self.assertIn("Sokol-9", memory.prompt_context())
+
+    def test_artifact_move_updates_current_location_and_keeps_history(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            memory = WorldMemory(root)
+            first = json.loads(memory.remember_artifact(
+                "Красная кружка", "Кухня", "на столе", source="camera", confidence=0.9
+            ))
+            second = json.loads(memory.remember_artifact(
+                "красная кружка", "Офис", "у монитора", source="user", confidence=1.0
+            ))
+            self.assertEqual(first["event"], "discovered")
+            self.assertEqual(second["event"], "moved")
+            found = json.loads(WorldMemory(root).find_artifacts("КРУЖКА"))
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]["place"], "Офис")
+            changes = json.loads(memory.recent_artifact_changes())
+            self.assertEqual(changes[0]["event"], "moved")
+            self.assertEqual(changes[0]["place"], "Офис")
+
+
+if __name__ == "__main__":
+    unittest.main()

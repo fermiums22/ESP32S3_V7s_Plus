@@ -1,6 +1,6 @@
 name: "GoPro Assist Bridge"
 description: "Voice gateway from the robot GoPro microphone to Home Assistant Assist"
-version: "0.1.3"
+version: "0.7.0"
 slug: "gopro_assist_bridge"
 init: false
 startup: application
@@ -15,10 +15,33 @@ options:
   pipeline_name: "GPT"
   stt_engine: "stt.faster_whisper"
   stt_language: "ru"
-  wake_phrases: "робот,фермиум"
+  wake_phrases: "сокол девять,сокол"
   tts_entity: "tts.piper"
   media_player: "media_player.v7s_plus_wifi_audio"
   language: "ru_RU"
+  agent_enabled: false
+  openai_api_key: ""
+  agent_model: "gpt-4o-mini"
+  agent_system_prompt: "@builtin"
+  agent_max_output_tokens: 250
+  agent_history_turns: 6
+  agent_max_tool_rounds: 4
+  agent_daily_limit_usd: 0.25
+  agent_monthly_limit_usd: 3.0
+  agent_request_reserve_usd: 0.01
+  agent_input_usd_per_million: 0.15
+  agent_cached_input_usd_per_million: 0.075
+  agent_output_usd_per_million: 0.60
+  camera_entity: "camera.robot_eyes"
+  home_map_entity: ""
+  camera_telemetry_entities: "sensor.v7s_plus_robot_state,sensor.v7s_plus_front_distance_left,sensor.v7s_plus_front_distance_center,sensor.v7s_plus_front_distance_right,sensor.v7s_plus_proximity_motion,sensor.v7s_plus_stm32_battery_voltage,sensor.v7s_plus_stm32_battery_current,binary_sensor.v7s_plus_left_motor_fault,binary_sensor.v7s_plus_right_motor_fault,binary_sensor.v7s_plus_robot_docked"
+  robot_event_entities: "sensor.v7s_plus_robot_state,sensor.v7s_plus_proximity_event,binary_sensor.v7s_plus_left_bumper_pressed,binary_sensor.v7s_plus_right_bumper_pressed,binary_sensor.v7s_plus_left_bumper_latched,binary_sensor.v7s_plus_right_bumper_latched,binary_sensor.v7s_plus_stm32_emergency_stop,binary_sensor.v7s_plus_left_motor_fault,binary_sensor.v7s_plus_right_motor_fault,binary_sensor.v7s_plus_robot_docked"
+  follow_distance_entities: "sensor.v7s_plus_front_distance_left,sensor.v7s_plus_front_distance_center,sensor.v7s_plus_front_distance_right"
+  follow_left_wheel_entity: "number.v7s_plus_left_wheel_target"
+  follow_right_wheel_entity: "number.v7s_plus_right_wheel_target"
+  follow_run_entity: "switch.v7s_plus_robot_run"
+  follow_safety_entities: "binary_sensor.v7s_plus_bumper_hit,binary_sensor.v7s_plus_left_motor_fault,binary_sensor.v7s_plus_right_motor_fault,binary_sensor.v7s_plus_stm32_emergency_stop,binary_sensor.v7s_plus_robot_docked"
+  place_odometry_entities: "sensor.v7s_plus_left_wheel_position,sensor.v7s_plus_right_wheel_position,sensor.v7s_plus_caster_odometry"
   vad_start_rms: 700
   vad_end_rms: 400
   vad_noise_multiplier: 3.0
@@ -37,6 +60,29 @@ schema:
   tts_entity: str
   media_player: str
   language: str
+  agent_enabled: bool
+  openai_api_key: password
+  agent_model: str
+  agent_system_prompt: str
+  agent_max_output_tokens: int
+  agent_history_turns: int
+  agent_max_tool_rounds: int
+  agent_daily_limit_usd: float
+  agent_monthly_limit_usd: float
+  agent_request_reserve_usd: float
+  agent_input_usd_per_million: float
+  agent_cached_input_usd_per_million: float
+  agent_output_usd_per_million: float
+  camera_entity: str
+  home_map_entity: str
+  camera_telemetry_entities: str
+  robot_event_entities: str
+  follow_distance_entities: str
+  follow_left_wheel_entity: str
+  follow_right_wheel_entity: str
+  follow_run_entity: str
+  follow_safety_entities: str
+  place_odometry_entities: str
   vad_start_rms: int
   vad_end_rms: int
   vad_noise_multiplier: float
