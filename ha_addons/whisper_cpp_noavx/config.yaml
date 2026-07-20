@@ -1,0 +1,20 @@
+name: "Sokol-9 Whisper.cpp NoAVX"
+description: "Local Russian Wyoming STT built for the Home Assistant CPU without AVX"
+version: "0.1.0"
+slug: "sokol9_whisper_cpp"
+init: false
+startup: application
+boot: auto
+arch:
+  - amd64
+host_network: true
+options:
+  model: "base-q5_1"
+  language: "ru"
+  beam_size: 1
+  debug: false
+schema:
+  model: "list(tiny-q5_1|base-q5_1|small-q5_1)"
+  language: str
+  beam_size: int
+  debug: bool

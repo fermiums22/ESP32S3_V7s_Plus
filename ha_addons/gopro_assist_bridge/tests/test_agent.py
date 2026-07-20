@@ -27,15 +27,20 @@ from gopro_assist.agent import (
 from gopro_assist.main import (
     BUILTIN_PROMPT_PATH,
     SOL_ADDENDUM_PATH,
+    brief_voice_response,
     follow_wheel_targets,
     is_location_query,
+    local_context_response,
+    local_personality_response,
     local_robot_command,
+    needs_agent_tools,
     place_enrollment_label,
     speaker_enrollment_name,
 )
 from gopro_assist.speaker_id import SpeakerProfiles
 from gopro_assist.visual_places import signature_from_gray, similarity
 from gopro_assist.memory import WorldMemory
+from gopro_assist.realtime import is_finish_phrase, pcm16_16k_to_24k
 
 
 CONFIG = AgentConfig(
@@ -118,6 +123,38 @@ class LocalRobotControlTest(unittest.TestCase):
         self.assertEqual(local_robot_command("остановись"), "stop")
         self.assertIsNone(local_robot_command("какая погода дома"))
 
+    def test_local_identity_does_not_need_agent(self) -> None:
+        response = local_personality_response("Как тебя зовут?")
+        self.assertIsNotNone(response)
+        self.assertIn("Сокол-девять", response)
+        self.assertIn("Виктор", response)
+        self.assertIsNone(local_personality_response("какая погода дома"))
+
+    def test_realtime_pcm_resampler_changes_16k_to_24k(self) -> None:
+        samples = array("h", [0, 300, 600, 900]).tobytes()
+        converted = array("h")
+        converted.frombytes(pcm16_16k_to_24k(samples))
+        self.assertEqual(len(converted), 6)
+        self.assertEqual(converted[0], 0)
+        self.assertEqual(converted[3], 600)
+
+    def test_finish_phrase_is_explicit(self) -> None:
+        self.assertTrue(is_finish_phrase("Всё, закончили!"))
+        self.assertTrue(is_finish_phrase("Стоп разговор"))
+        self.assertFalse(is_finish_phrase("хватит пяти минут"))
+
+    def test_spoken_response_is_short_and_plain(self) -> None:
+        long_text = " ".join(f"слово{index}" for index in range(30))
+        result = brief_voice_response(f"**{long_text}**")
+        self.assertEqual(len(result.removesuffix("…").split()), 18)
+        self.assertTrue(result.endswith("…"))
+        self.assertNotIn("*", result)
+
+    def test_time_is_answered_locally_and_camera_uses_tools(self) -> None:
+        self.assertRegex(local_context_response("который час"), r"^Сейчас \d\d:\d\d\.$")
+        self.assertTrue(needs_agent_tools("что ты сейчас видишь через камеру"))
+        self.assertFalse(needs_agent_tools("давай просто поговорим"))
+
     def test_follow_targets_are_slow_and_directional(self) -> None:
         self.assertEqual(follow_wheel_targets(None, None, None), (0, 0))
         self.assertEqual(follow_wheel_targets(40, None, None), (0, 0))
@@ -151,10 +188,13 @@ class SpeakerProfilesTest(unittest.TestCase):
     def test_enrolls_and_separates_two_pitch_profiles(self) -> None:
         with TemporaryDirectory() as directory:
             profiles = SpeakerProfiles(Path(directory) / "speakers.json")
-            profiles.enroll("Виктор", self._tone(120))
-            profiles.enroll("Дочка", self._tone(240))
+            profiles.enroll("Виктор", self._tone(120) * 2)
+            profiles.enroll("Дочка", self._tone(240) * 2)
             self.assertEqual(profiles.identify(self._tone(120))[0], "Виктор")
             self.assertEqual(profiles.identify(self._tone(240))[0], "Дочка")
+            references = profiles.reference_clips()
+            self.assertEqual([name for name, _ in references], ["Виктор", "Дочка"])
+            self.assertTrue(all(wav.startswith(b"RIFF") for _, wav in references))
 
 
 class VisualPlaceSignatureTest(unittest.TestCase):

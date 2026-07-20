@@ -19,8 +19,10 @@ import time
 from array import array
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import websockets
@@ -34,6 +36,8 @@ from .agent import (
     WORLD_DB_PATH,
 )
 from .speaker_id import SpeakerProfiles
+from .speaker_diarization import CloudTranscriber, SpeakerDiarizer
+from .realtime import RealtimeConversation, is_finish_phrase
 from .visual_places import VisualPlaceStore
 from .memory import MEMORY_DB_PATH, MEMORY_ROOT, WorldMemory
 
@@ -65,6 +69,14 @@ class Config:
     language: str
     agent_enabled: bool
     agent: AgentConfig
+    realtime_enabled: bool
+    realtime_model: str
+    realtime_transcription_model: str
+    conversation_timeout_seconds: int
+    cloud_stt_enabled: bool
+    cloud_stt_model: str
+    speaker_diarization_enabled: bool
+    speaker_diarization_model: str
     robot_event_entities: tuple[str, ...]
     follow_distance_entities: tuple[str, str, str]
     follow_left_wheel_entity: str
@@ -115,7 +127,7 @@ class Config:
             rtsp_url=str(raw["rtsp_url"]),
             pipeline_id=str(raw.get("pipeline_id", "")).strip(),
             pipeline_name=str(raw.get("pipeline_name", "GPT")).strip(),
-            stt_engine=str(raw.get("stt_engine", "stt.faster_whisper")).strip(),
+            stt_engine=str(raw.get("stt_engine", "stt.whisper_cpp")).strip(),
             stt_language=str(raw.get("stt_language", "ru")).strip(),
             wake_phrases=phrases,
             tts_entity=str(raw.get("tts_entity", "tts.piper")),
@@ -143,6 +155,24 @@ class Config:
                     if item.strip()
                 ),
             ),
+            realtime_enabled=bool(raw.get("realtime_enabled", True)),
+            realtime_model=str(raw.get("realtime_model", "gpt-realtime-2.1")).strip(),
+            realtime_transcription_model=str(
+                raw.get("realtime_transcription_model", "gpt-realtime-whisper")
+            ).strip(),
+            conversation_timeout_seconds=max(
+                15, min(300, int(raw.get("conversation_timeout_seconds", 60)))
+            ),
+            cloud_stt_enabled=bool(raw.get("cloud_stt_enabled", True)),
+            cloud_stt_model=str(
+                raw.get("cloud_stt_model", "gpt-4o-mini-transcribe")
+            ).strip(),
+            speaker_diarization_enabled=bool(
+                raw.get("speaker_diarization_enabled", True)
+            ),
+            speaker_diarization_model=str(
+                raw.get("speaker_diarization_model", "gpt-4o-transcribe-diarize")
+            ).strip(),
             robot_event_entities=tuple(
                 item.strip()
                 for item in str(raw.get("robot_event_entities", "")).split(",")
@@ -641,6 +671,63 @@ def local_robot_command(text: str) -> str | None:
     return None
 
 
+def local_personality_response(text: str) -> str | None:
+    """Answer identity questions even when the cloud agent is disabled."""
+    normalized = re.sub(r"[^а-яa-z0-9]+", " ", text.casefold().replace("ё", "е")).strip()
+    if normalized in {
+        "как тебя зовут",
+        "кто ты",
+        "ты кто",
+        "как твое имя",
+        "назови себя",
+    }:
+        return (
+            "Я Сокол-девять. Слышу тебя, Виктор, и готов общаться."
+        )
+    if normalized in {"ты меня слышишь", "слышишь меня", "ты слышишь"}:
+        return "Да, Виктор, слышу тебя. Я Сокол-девять."
+    return None
+
+
+def local_context_response(text: str) -> str | None:
+    normalized = re.sub(
+        r"[^а-яa-z0-9]+", " ", text.casefold().replace("ё", "е")
+    ).strip()
+    now = datetime.now(ZoneInfo("Europe/Minsk"))
+    if normalized in {
+        "который час", "сколько времени", "сколько сейчас времени", "какое время",
+    }:
+        return f"Сейчас {now:%H:%M}."
+    if normalized in {"какой сегодня день недели", "какой день недели", "а день недели"}:
+        days = (
+            "понедельник", "вторник", "среда", "четверг",
+            "пятница", "суббота", "воскресенье",
+        )
+        return f"Сегодня {days[now.weekday()]}."
+    return None
+
+
+def needs_agent_tools(text: str) -> bool:
+    normalized = re.sub(
+        r"[^а-яa-z0-9]+", " ", text.casefold().replace("ё", "е")
+    ).strip()
+    return bool(re.search(
+        r"\b(видишь|посмотри|камера|на карте|найди|где лежит|"
+        r"включи|выключи|открой|закрой|состояние|датчик|температур)\b",
+        normalized,
+    ))
+
+
+def brief_voice_response(text: str, max_words: int = 18) -> str:
+    """Keep spoken turns conversational instead of reading long paragraphs."""
+    cleaned = re.sub(r"[*_`#>]", "", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    words = cleaned.split()
+    if len(words) <= max_words:
+        return cleaned
+    return " ".join(words[:max_words]).rstrip(" ,;:-.…") + "…"
+
+
 def speaker_enrollment_name(text: str) -> str | None:
     normalized = re.sub(r"\s+", " ", text.casefold().replace("ё", "е")).strip(" ,.:;!?")
     match = re.fullmatch(
@@ -696,10 +783,14 @@ class Bridge:
         self.follow_last_targets: tuple[int, int] | None = None
         self.stop_event = asyncio.Event()
         self.last_metrics = 0.0
+        self.acknowledgement_index = 0
         self.events = SemanticEventJournal(path=WORLD_DB_PATH)
         self.memory = WorldMemory(database=MEMORY_DB_PATH)
         self.speaker_profiles = SpeakerProfiles(SPEAKER_PROFILES_PATH)
         self.visual_places = VisualPlaceStore(VISUAL_PLACES_PATH)
+        self.conversation_until = 0.0
+        self.realtime_retry_after = 0.0
+        self.speaker_tasks: set[asyncio.Task[None]] = set()
         self.agent = (
             OpenAIAgent(
                 config.agent,
@@ -712,6 +803,127 @@ class Bridge:
             if config.agent_enabled and ha.session is not None
             else None
         )
+        realtime_instructions = (
+            config.agent.system_prompt
+            + "\n\n"
+            + self.memory.prompt_context()
+            + "\n\nТы ведёшь живой устный разговор на русском языке. "
+            "Отвечай кратко, обычно одним-двумя предложениями. "
+            "Не требуй повторять позывной Сокол: пользователь уже открыл диалог. "
+            "Всегда отвечай только по-русски, даже если услышал иностранное слово. "
+            "Каждый устный ответ — одно короткое предложение без списков и предисловий. "
+            "Не утверждай, что выполнил физическое действие робота, если оно не было выполнено локальным контроллером."
+        )
+        self.realtime = (
+            RealtimeConversation(
+                api_key=config.agent.api_key,
+                model=config.realtime_model,
+                transcription_model=config.realtime_transcription_model,
+                instructions=realtime_instructions,
+                max_output_tokens=config.agent.max_output_tokens,
+            )
+            if config.realtime_enabled and config.agent.api_key
+            else None
+        )
+        self.diarizer = (
+            SpeakerDiarizer(
+                api_key=config.agent.api_key,
+                session=ha.session,
+                profiles=self.speaker_profiles,
+                model=config.speaker_diarization_model,
+            )
+            if config.speaker_diarization_enabled
+            and config.agent.api_key
+            and ha.session is not None
+            else None
+        )
+        self.cloud_transcriber = (
+            CloudTranscriber(
+                api_key=config.agent.api_key,
+                session=ha.session,
+                model=config.cloud_stt_model,
+            )
+            if config.cloud_stt_enabled and config.agent.api_key and ha.session is not None
+            else None
+        )
+
+    @property
+    def conversation_active(self) -> bool:
+        return self.realtime is not None and time.monotonic() < self.conversation_until
+
+    def extend_conversation(self) -> None:
+        self.conversation_until = (
+            time.monotonic() + self.config.conversation_timeout_seconds
+        )
+
+    async def finish_conversation(self) -> None:
+        self.conversation_until = 0.0
+        if self.realtime is not None:
+            await self.realtime.close()
+
+    async def deliver_response(self, response: str) -> None:
+        if not response:
+            response = "Команда выполнена без текстового ответа."
+        response = brief_voice_response(response, max_words=10)
+        await self.ha.set_sensor(
+            "sensor.gopro_assist_response",
+            response,
+            {"updated_at": int(time.time()), "dialog_active": self.conversation_active},
+        )
+        await self.ha.set_sensor("sensor.gopro_assist_status", "speaking")
+        await self.ha.speak(response)
+        self.suppress_until = time.monotonic() + max(
+            2.0, min(20.0, len(response) / 15.0 + 1.0)
+        )
+        LOGGER.info("response sent to %s: %s", self.config.media_player, response)
+
+    def identify_speaker_in_background(self, audio: bytes) -> None:
+        if self.diarizer is None or not self.diarizer.ready:
+            return
+        task = asyncio.create_task(self.identify_speaker_precisely(audio))
+        self.speaker_tasks.add(task)
+        task.add_done_callback(self.speaker_tasks.discard)
+
+    async def identify_speaker_precisely(self, audio: bytes) -> None:
+        assert self.diarizer is not None
+        try:
+            result = await self.diarizer.identify(audio)
+            if result is None:
+                return
+            await self.ha.set_sensor(
+                "sensor.sokol_9_speaker",
+                result.speaker,
+                {
+                    "engine": self.config.speaker_diarization_model,
+                    "voice_seconds": round(result.seconds, 2),
+                    "updated_at": int(time.time()),
+                },
+            )
+            LOGGER.info("known speaker identified=%s", result.speaker)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            LOGGER.warning("speaker diarization failed: %s", err)
+
+    async def transcribe_wake_turn(self, audio: bytes) -> str:
+        if self.cloud_transcriber is not None:
+            try:
+                return await self.cloud_transcriber.transcribe(audio)
+            except Exception as err:
+                LOGGER.warning("cloud STT failed; using local fallback: %s", err)
+        return await self.ha.run_stt(audio)
+
+    async def acknowledge_long_request(self) -> None:
+        phrases = ("Слышу.", "Понял, думаю.", "Секунду.")
+        phrase = phrases[self.acknowledgement_index % len(phrases)]
+        self.acknowledgement_index += 1
+        await self.ha.set_sensor(
+            "sensor.gopro_assist_response",
+            phrase,
+            {"interim": True, "updated_at": int(time.time())},
+        )
+        await self.ha.speak(phrase)
+        self.suppress_until = time.monotonic() + 1.5
 
     async def set_wheels(self, left: int, right: int) -> None:
         targets = (left, right)
@@ -915,7 +1127,63 @@ class Bridge:
             await self.ha.set_sensor(
                 "sensor.gopro_assist_status", "recognizing", {"audio_bytes": len(audio)}
             )
-            transcript = await self.ha.run_stt(audio)
+            if self.conversation_active:
+                assert self.realtime is not None
+                transcript = ""
+                response = ""
+                if time.monotonic() >= self.realtime_retry_after:
+                    try:
+                        transcript, response = await self.realtime.ask_audio(audio)
+                    except Exception as err:
+                        LOGGER.warning(
+                            "Realtime continuation failed; using local fallback: %s", err
+                        )
+                        self.realtime_retry_after = time.monotonic() + 30
+                        await self.realtime.close()
+                if not response:
+                    transcript = transcript or await self.transcribe_wake_turn(audio)
+                    if not transcript:
+                        LOGGER.info("ignored Realtime turn without a transcript")
+                        return
+                    if self.agent is not None:
+                        response = await self.agent.ask(transcript)
+                    else:
+                        response = await self.ha.run_intent(transcript)
+                if not transcript:
+                    LOGGER.info("ignored Realtime turn without a transcript")
+                    return
+                shown_transcript = transcript or "голосовая реплика"
+                await self.ha.set_sensor(
+                    "sensor.gopro_assist_transcript",
+                    shown_transcript,
+                    {
+                        "accepted": True,
+                        "continued": True,
+                        "updated_at": int(time.time()),
+                    },
+                )
+                self.identify_speaker_in_background(audio)
+                LOGGER.info("Realtime continuation transcript=%s", shown_transcript)
+                if transcript and is_finish_phrase(transcript):
+                    await self.finish_conversation()
+                    response = "Хорошо, закончили. Позови меня, когда понадоблюсь."
+                else:
+                    local_response = local_context_response(transcript)
+                    if (
+                        local_response is None
+                        and needs_agent_tools(transcript)
+                        and self.agent is not None
+                    ):
+                        local_response = await self.agent.ask(transcript)
+                    if local_response is None:
+                        local_response = await self.handle_local_robot_command(transcript)
+                    if local_response is not None:
+                        response = local_response
+                    self.extend_conversation()
+                await self.deliver_response(response)
+                return
+
+            transcript = await self.transcribe_wake_turn(audio)
             await self.ha.set_sensor(
                 "sensor.gopro_assist_transcript",
                 transcript or "no speech",
@@ -940,12 +1208,18 @@ class Bridge:
                 },
             )
             LOGGER.info("wake phrase accepted command=%s", command or "<empty>")
+            if self.realtime is not None:
+                self.extend_conversation()
             if command:
                 await self.ha.set_sensor("sensor.gopro_assist_status", "thinking")
                 enrollment_name = speaker_enrollment_name(command)
                 place_label = place_enrollment_label(command)
                 location_query = is_location_query(command)
-                speaker_match = None if enrollment_name else self.speaker_profiles.identify(audio)
+                speaker_match = (
+                    None
+                    if enrollment_name or (self.diarizer is not None and self.diarizer.ready)
+                    else self.speaker_profiles.identify(audio)
+                )
                 if enrollment_name:
                     try:
                         samples = self.speaker_profiles.enroll(enrollment_name, audio)
@@ -960,6 +1234,7 @@ class Bridge:
                     except ValueError:
                         response = "Не хватило чистого голоса. Повтори фразу ближе ко мне."
                 else:
+                    self.identify_speaker_in_background(audio)
                     speaker_name = speaker_match[0] if speaker_match else "unknown"
                     speaker_distance = speaker_match[1] if speaker_match else None
                     await self.ha.set_sensor(
@@ -971,13 +1246,35 @@ class Bridge:
                     elif location_query:
                         response = await self.identify_visual_place()
                     else:
-                        response = await self.handle_local_robot_command(command)
+                        response = local_personality_response(command)
+                        if response is None:
+                            response = local_context_response(command)
+                        if response is None:
+                            response = await self.handle_local_robot_command(command)
                 if enrollment_name:
                     LOGGER.info("local speaker enrollment handled without cloud agent")
                 elif response is not None:
                     LOGGER.info("local robot command handled without cloud agent")
+                elif self.agent is not None and needs_agent_tools(command):
+                    await self.acknowledge_long_request()
+                    response = await self.agent.ask(command)
+                elif self.realtime is not None:
+                    try:
+                        await self.acknowledge_long_request()
+                        response = (await self.realtime.ask_text(command))[1]
+                    except Exception as err:
+                        LOGGER.warning(
+                            "Realtime first turn failed; using Responses fallback: %s", err
+                        )
+                        self.realtime_retry_after = time.monotonic() + 30
+                        await self.realtime.close()
+                        if self.agent is not None:
+                            response = await self.agent.ask(command)
+                        else:
+                            response = await self.ha.run_intent(command)
                 elif self.agent is not None:
                     try:
+                        await self.acknowledge_long_request()
                         prompt = (
                             f"[Говорит: {speaker_match[0]}] {command}"
                             if speaker_match else command
@@ -986,22 +1283,11 @@ class Bridge:
                     except BudgetExceeded:
                         response = "Лимит расходов достигнут. Облачный агент отключён."
                 else:
+                    await self.acknowledge_long_request()
                     response = await self.ha.run_intent(command)
             else:
-                response = "Слушаю."
-            if not response:
-                response = "Команда выполнена без текстового ответа."
-            await self.ha.set_sensor(
-                "sensor.gopro_assist_response",
-                response,
-                {"updated_at": int(time.time())},
-            )
-            await self.ha.set_sensor("sensor.gopro_assist_status", "speaking")
-            await self.ha.speak(response)
-            self.suppress_until = time.monotonic() + max(
-                4.0, min(30.0, len(response) / 11.0 + 2.0)
-            )
-            LOGGER.info("response sent to %s: %s", self.config.media_player, response)
+                response = "Слушаю. Можешь говорить дальше без слова Сокол."
+            await self.deliver_response(response)
         except Exception as err:
             LOGGER.exception("voice request failed")
             await self.ha.set_sensor(
@@ -1136,6 +1422,10 @@ class Bridge:
         finally:
             with contextlib.suppress(Exception):
                 await self.stop_following()
+            with contextlib.suppress(Exception):
+                await self.finish_conversation()
+            for task in self.speaker_tasks:
+                task.cancel()
             media_task.cancel()
             event_task.cancel()
             follow_task.cancel()
@@ -1145,6 +1435,9 @@ class Bridge:
                 await event_task
             with contextlib.suppress(asyncio.CancelledError):
                 await follow_task
+            for task in tuple(self.speaker_tasks):
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
 
 async def async_main() -> None:

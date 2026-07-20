@@ -2,7 +2,7 @@
 
 По умолчанию используется поток
 `rtsp://192.168.0.4:8554/gopro_robot`, Assist pipeline `GPT`, локальный STT
-`stt.faster_whisper`, Piper `tts.piper` и
+`stt.whisper_cpp`, Piper `tts.piper` и
 `media_player.v7s_plus_wifi_audio`.
 
 Основные параметры VAD:
@@ -45,7 +45,7 @@ WAL; после перезапуска остаются последние 10 00
 передаёт агенту один актуальный кадр LDS-карты. Поддерживаются карта как
 `camera.*` и карта как `image.*` через её локальный `entity_picture`.
 
-Локальный `stt.faster_whisper` и TTS не входят в API-расходы. Add-on считает usage
+Локальный `stt.whisper_cpp` и TTS не входят в API-расходы. Add-on считает usage
 из каждого ответа OpenAI, хранит счётчики в `/data/agent_usage.json` и публикует:
 
 - `sensor.robot_agent_input_tokens`;

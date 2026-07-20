@@ -56,7 +56,7 @@ ZIP будет создан в `dist/sokol9-ha-addon.zip`.
 До первого запуска проверить:
 
 - `rtsp_url` — поток GoPro `gopro_robot`;
-- `stt_engine` — локальный `stt.faster_whisper`;
+- `stt_engine` — локальный `stt.whisper_cpp` из add-on `Sokol-9 Whisper.cpp NoAVX`;
 - `tts_entity` — фактическая сущность Supertonic;
 - `media_player` — JBL робота;
 - `wake_phrases` — `сокол девять,сокол`;

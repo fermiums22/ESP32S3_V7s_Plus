@@ -8,9 +8,12 @@ templates per person.
 from __future__ import annotations
 
 import json
+import io
 import math
+import re
 import statistics
 import sys
+import wave
 from array import array
 from pathlib import Path
 from typing import Any
@@ -18,6 +21,16 @@ from typing import Any
 
 SAMPLE_RATE = 16_000
 FREQUENCIES = (120, 180, 260, 380, 550, 780, 1100, 1550, 2200, 3100, 4000)
+
+
+def pcm16_wav(pcm: bytes, sample_rate: int = SAMPLE_RATE) -> bytes:
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm[: len(pcm) - len(pcm) % 2])
+    return output.getvalue()
 
 
 def _goertzel(frame: list[float], frequency: int) -> float:
@@ -101,9 +114,15 @@ def feature_distance(left: list[float], right: list[float]) -> float:
 
 
 class SpeakerProfiles:
-    def __init__(self, path: Path, threshold: float = 0.48) -> None:
+    def __init__(
+        self,
+        path: Path,
+        threshold: float = 0.48,
+        reference_dir: Path | None = None,
+    ) -> None:
         self.path = path
         self.threshold = threshold
+        self.reference_dir = reference_dir or path.with_name("speaker_references")
         self.profiles: dict[str, list[list[float]]] = self._load()
 
     def _load(self) -> dict[str, list[list[float]]]:
@@ -129,7 +148,33 @@ class SpeakerProfiles:
             json.dumps(self.profiles, ensure_ascii=False, separators=(",", ":")),
             encoding="utf-8",
         )
+        self._save_reference(name, pcm)
         return len(templates)
+
+    def _reference_path(self, name: str) -> Path:
+        safe_name = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", name).strip("_")
+        return self.reference_dir / f"{safe_name or 'speaker'}.wav"
+
+    def _save_reference(self, name: str, pcm: bytes) -> None:
+        minimum = SAMPLE_RATE * 2 * 2
+        maximum = SAMPLE_RATE * 2 * 10
+        if len(pcm) < minimum:
+            return
+        clipped = pcm[:maximum]
+        self.reference_dir.mkdir(parents=True, exist_ok=True)
+        self._reference_path(name).write_bytes(pcm16_wav(clipped))
+
+    def reference_clips(self, limit: int = 4) -> list[tuple[str, bytes]]:
+        clips: list[tuple[str, bytes]] = []
+        for name in self.profiles:
+            path = self._reference_path(name)
+            try:
+                clips.append((name, path.read_bytes()))
+            except OSError:
+                continue
+            if len(clips) >= limit:
+                break
+        return clips
 
     def identify(self, pcm: bytes) -> tuple[str, float] | None:
         feature = voice_features(pcm)

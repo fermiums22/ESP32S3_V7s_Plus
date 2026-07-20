@@ -4,6 +4,7 @@ secrets.yaml
 
 # Local diagnostics and temporary OpenGoPro state.  They are never project input.
 .codex_*
+.codex-ha-staging/
 cohn_db.json
 
 # Previous local ESP-IDF bring-up; safe to remove after migration.

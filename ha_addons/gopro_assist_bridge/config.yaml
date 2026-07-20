@@ -1,6 +1,6 @@
 name: "GoPro Assist Bridge"
 description: "Voice gateway from the robot GoPro microphone to Home Assistant Assist"
-version: "0.7.0"
+version: "0.8.0"
 slug: "gopro_assist_bridge"
 init: false
 startup: application
@@ -13,7 +13,7 @@ options:
   rtsp_url: "rtsp://192.168.0.4:8554/gopro_robot"
   pipeline_id: "01kxvnjgzn01ztjz62rvdyydf8"
   pipeline_name: "GPT"
-  stt_engine: "stt.faster_whisper"
+  stt_engine: "stt.whisper_cpp"
   stt_language: "ru"
   wake_phrases: "сокол девять,сокол"
   tts_entity: "tts.piper"
@@ -21,6 +21,14 @@ options:
   language: "ru_RU"
   agent_enabled: false
   openai_api_key: ""
+  realtime_enabled: true
+  realtime_model: "gpt-realtime-2.1"
+  realtime_transcription_model: "gpt-realtime-whisper"
+  conversation_timeout_seconds: 60
+  cloud_stt_enabled: true
+  cloud_stt_model: "gpt-4o-mini-transcribe"
+  speaker_diarization_enabled: true
+  speaker_diarization_model: "gpt-4o-transcribe-diarize"
   agent_model: "gpt-4o-mini"
   agent_system_prompt: "@builtin"
   agent_max_output_tokens: 250
@@ -62,6 +70,14 @@ schema:
   language: str
   agent_enabled: bool
   openai_api_key: password
+  realtime_enabled: bool
+  realtime_model: str
+  realtime_transcription_model: str
+  conversation_timeout_seconds: int
+  cloud_stt_enabled: bool
+  cloud_stt_model: str
+  speaker_diarization_enabled: bool
+  speaker_diarization_model: str
   agent_model: str
   agent_system_prompt: str
   agent_max_output_tokens: int
