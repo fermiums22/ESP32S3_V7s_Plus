@@ -48,6 +48,9 @@ class CloudTranscriber:
         self.output_usd_per_million = output_usd_per_million
         self.usage_path = usage_path
         self.usage = self._load_usage()
+        self.last_usage: dict[str, Any] = {}
+        self.last_summary: dict[str, Any] = self.today_summary()
+        self.last_audio_seconds = 0.0
 
     def _load_usage(self) -> dict[str, Any]:
         try:
@@ -100,7 +103,9 @@ class CloudTranscriber:
             "daily_audio_seconds_limit": self.daily_audio_seconds_limit,
         }
 
-    def _record_usage(self, audio_seconds: float, usage: dict[str, Any]) -> None:
+    def _record_usage(
+        self, audio_seconds: float, usage: dict[str, Any]
+    ) -> dict[str, Any]:
         item = self._day_item()
         item["requests"] = int(item["requests"]) + 1
         item["audio_sent_seconds"] = round(
@@ -114,6 +119,7 @@ class CloudTranscriber:
         item["last_usage"] = usage
         item["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self._save_usage()
+        return self.today_summary()
 
     async def transcribe(self, pcm16_16k: bytes) -> str:
         audio_seconds = len(pcm16_16k) / 2 / 16_000
@@ -175,7 +181,9 @@ class CloudTranscriber:
             final_text = "".join(chunks).strip()
         if not final_text and body_text.strip() and not body_text.lstrip().startswith("data:"):
             final_text = body_text.strip()
-        self._record_usage(audio_seconds, usage)
+        self.last_audio_seconds = audio_seconds
+        self.last_usage = dict(usage)
+        self.last_summary = self._record_usage(audio_seconds, usage)
         return final_text
 
 

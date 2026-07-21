@@ -49,6 +49,7 @@ SAMPLE_RATE = 16_000
 SAMPLE_WIDTH = 2
 CHUNK_MS = 20
 CHUNK_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * CHUNK_MS // 1000
+VAD_STARTUP_CALIBRATION_MS = 2_000
 SPEAKER_PROFILES_PATH = Path("/data/speaker_profiles.json")
 VISUAL_PLACES_PATH = MEMORY_ROOT / "vision" / "places"
 DIALOG_HISTORY_PATH = Path("/data/dialog_history.json")
@@ -69,6 +70,8 @@ class Config:
     media_player: str
     language: str
     agent_enabled: bool
+    stt_only_mode: bool
+    quick_acknowledgements: tuple[str, ...]
     agent: AgentConfig
     conversation_timeout_seconds: int
     cloud_stt_enabled: bool
@@ -138,6 +141,14 @@ class Config:
             media_player=str(raw["media_player"]),
             language=str(raw.get("language", "ru_RU")),
             agent_enabled=bool(raw.get("agent_enabled", False)),
+            stt_only_mode=bool(raw.get("stt_only_mode", False)),
+            quick_acknowledgements=tuple(
+                item.strip()
+                for item in str(
+                    raw.get("quick_acknowledgements", "Хм.,Угу.,М-м.")
+                ).split(",")
+                if item.strip()
+            ) or ("Хм.",),
             agent=AgentConfig(
                 api_key=str(raw.get("openai_api_key", "")).strip(),
                 model=str(raw.get("agent_model", "gpt-5.6-sol")).strip(),
@@ -280,6 +291,10 @@ class AdaptiveVad:
         self.speech_ms = 0
         self.silence_ms = 0
         self.start_hits = 0
+        self.calibration_chunks_remaining = max(
+            1, VAD_STARTUP_CALIBRATION_MS // CHUNK_MS
+        )
+        self.calibration_rms: list[int] = []
 
     @property
     def start_threshold(self) -> int:
@@ -296,6 +311,19 @@ class AdaptiveVad:
 
     def feed(self, chunk: bytes) -> tuple[bytes | None, int]:
         rms = pcm_rms(chunk)
+        if self.calibration_chunks_remaining > 0:
+            self.calibration_rms.append(rms)
+            self.calibration_chunks_remaining -= 1
+            if self.calibration_chunks_remaining == 0:
+                ordered = sorted(self.calibration_rms)
+                index = round((len(ordered) - 1) * 0.60)
+                self.noise_floor = max(30.0, float(ordered[index]))
+                LOGGER.info(
+                    "VAD calibrated noise=%.0f start_threshold=%d",
+                    self.noise_floor,
+                    self.start_threshold,
+                )
+            return None, rms
         if not self.speech:
             if rms < self.start_threshold:
                 self.noise_floor = 0.985 * self.noise_floor + 0.015 * rms
@@ -391,15 +419,15 @@ class DialogHistory:
         )
         temporary.replace(self.path)
 
-    def start_turn(self, user: str, speaker: str = "") -> None:
-        self.turns.append(
-            {
-                "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
-                "user": self._clip(user),
-                "assistant": "",
-                "speaker": self._clip(speaker),
-            }
-        )
+    def start_turn(self, user: str, speaker: str = "", **details: Any) -> None:
+        turn: dict[str, Any] = {
+            "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "user": self._clip(user),
+            "assistant": "",
+            "speaker": self._clip(speaker),
+        }
+        turn.update(details)
+        self.turns.append(turn)
         self.turns = self.turns[-self.max_turns :]
         self._save()
 
@@ -407,6 +435,13 @@ class DialogHistory:
         if not self.turns:
             return
         self.turns[-1]["assistant"] = self._clip(assistant)
+        self._save()
+
+    def update_turn(self, **details: Any) -> None:
+        if not self.turns:
+            return
+        for key, value in details.items():
+            self.turns[-1][key] = self._clip(value) if isinstance(value, str) else value
         self._save()
 
     def attributes(self) -> dict[str, Any]:
@@ -762,6 +797,40 @@ def strip_wake_phrase(text: str, phrases: tuple[str, ...]) -> tuple[bool, str]:
     return False, text
 
 
+def local_wake_detected(text: str, phrases: tuple[str, ...]) -> bool:
+    """Tolerate the small local gate's common suffix error around «Сокол»."""
+    addressed, _ = strip_wake_phrase(text, phrases)
+    if addressed:
+        return True
+    words = re.findall(r"[а-яё]+", text.casefold())
+    return any(word.startswith("сокол") and len(word) <= 9 for word in words)
+
+
+def is_local_non_speech_label(text: str) -> bool:
+    normalized = text.casefold().replace("ё", "е").strip()
+    if not (normalized.startswith(("[", "(")) and normalized.endswith(("]", ")"))):
+        return False
+    return any(
+        label in normalized
+        for label in ("музык", "шум", "тишин", "аплодис", "неразборчив")
+    )
+
+
+def is_cloud_prompt_echo(text: str, prompt: str) -> bool:
+    """Reject the transcription hint when Audio STT echoes it on empty audio."""
+    normalize = lambda value: re.sub(
+        r"[^а-яёa-z0-9]+", " ", value.casefold()
+    ).strip()
+    transcript = normalize(text)
+    hint = normalize(prompt)
+    if not transcript or not hint:
+        return False
+    return transcript == hint or (
+        min(len(transcript), len(hint)) >= 20
+        and (transcript.startswith(hint) or hint.startswith(transcript))
+    )
+
+
 def is_finish_conversation(text: str) -> bool:
     normalized = re.sub(
         r"[^а-яa-z0-9]+", " ", text.casefold().replace("ё", "е")
@@ -995,7 +1064,25 @@ class Bridge:
             self.ha.set_sensor(
                 "sensor.gopro_stt_audio_seconds_today",
                 f'{summary["audio_sent_seconds"]:.1f}',
-                {"limit_seconds": summary["daily_audio_seconds_limit"]},
+                {
+                    "unit_of_measurement": "s",
+                    "limit_seconds": summary["daily_audio_seconds_limit"],
+                },
+            ),
+            self.ha.set_sensor(
+                "sensor.gopro_stt_input_tokens_today",
+                str(summary["input_tokens"]),
+                {"unit_of_measurement": "tokens"},
+            ),
+            self.ha.set_sensor(
+                "sensor.gopro_stt_output_tokens_today",
+                str(summary["output_tokens"]),
+                {"unit_of_measurement": "tokens"},
+            ),
+            self.ha.set_sensor(
+                "sensor.gopro_stt_total_tokens_today",
+                str(summary["total_tokens"]),
+                {"unit_of_measurement": "tokens"},
             ),
             self.ha.set_sensor(
                 "sensor.gopro_stt_cost_today",
@@ -1019,8 +1106,8 @@ class Bridge:
             LOGGER.warning("cloud STT failed; using local draft: %s", err)
             return local_draft
 
-    async def acknowledge_long_request(self) -> None:
-        phrases = ("Слышу.", "Понял, думаю.", "Секунду.")
+    async def acknowledge_long_request(self) -> str:
+        phrases = self.config.quick_acknowledgements
         phrase = phrases[self.acknowledgement_index % len(phrases)]
         self.acknowledgement_index += 1
         await self.ha.set_sensor(
@@ -1030,6 +1117,7 @@ class Bridge:
         )
         await self.ha.speak(phrase)
         self.suppress_until = time.monotonic() + 1.5
+        return phrase
 
     async def set_wheels(self, left: int, right: int) -> None:
         targets = (left, right)
@@ -1419,7 +1507,11 @@ class Bridge:
                 LOGGER.info("local STT gate rejected an empty phrase")
                 return
 
-            draft_addressed, _ = strip_wake_phrase(
+            if is_local_non_speech_label(local_draft):
+                LOGGER.info("local STT gate rejected non-speech label: %s", local_draft)
+                return
+
+            draft_addressed = local_wake_detected(
                 local_draft, self.config.wake_phrases
             )
             continued = self.conversation_active
@@ -1427,13 +1519,87 @@ class Bridge:
                 LOGGER.info("local STT gate ignored outside-dialog text: %s", local_draft)
                 return
 
-            # Match the desktop prototype: acknowledge immediately after the
-            # cheap local gate, then spend Audio API time only on accepted speech.
-            await self.acknowledge_long_request()
+            if self.config.stt_only_mode:
+                speaker_match = self.speaker_profiles.identify(audio)
+                speaker_name = speaker_match[0] if speaker_match else "Говорящий"
+                self.dialog_history.start_turn(
+                    local_draft,
+                    speaker_name,
+                    draft=local_draft,
+                    final="",
+                    stage="draft",
+                    duration_seconds=round(len(audio) / 2 / SAMPLE_RATE, 3),
+                )
+                history_started = True
+                await self.publish_dialog_history()
+                await self.ha.set_sensor(
+                    "sensor.gopro_assist_transcript",
+                    local_draft,
+                    {
+                        "full_text": local_draft,
+                        "draft": local_draft,
+                        "final": "",
+                        "speaker": speaker_name,
+                        "stage": "draft",
+                        "updated_at": int(time.time()),
+                    },
+                )
+                self.extend_conversation()
+
+            # Match the Windows prototype: acknowledge as soon as local Whisper
+            # accepts speech, while the same prepared PCM is sent to Audio STT.
+            acknowledgement = await self.acknowledge_long_request()
+            if self.config.stt_only_mode:
+                self.dialog_history.finish_turn(acknowledgement)
+                self.dialog_history.update_turn(acknowledgement=acknowledgement)
+                await self.publish_dialog_history()
+
             await self.ha.set_sensor(
                 "sensor.gopro_assist_status",
                 "cloud_stt" if self.cloud_transcriber is not None else "recognized",
             )
+
+            if self.config.stt_only_mode:
+                if self.cloud_transcriber is None:
+                    raise RuntimeError("Audio STT не настроен; локальный черновик не используется как итог")
+                transcript = (await self.cloud_transcriber.transcribe(audio)).strip()
+                await self.publish_stt_usage()
+                if is_cloud_prompt_echo(transcript, self.config.cloud_stt_prompt):
+                    LOGGER.info("Audio STT prompt echo treated as an empty result")
+                    transcript = ""
+                usage = dict(self.cloud_transcriber.last_usage)
+                summary = dict(self.cloud_transcriber.last_summary)
+                self.dialog_history.update_turn(
+                    user=transcript,
+                    final=transcript,
+                    stage="final",
+                    input_tokens=int(usage.get("input_tokens", 0)),
+                    output_tokens=int(usage.get("output_tokens", 0)),
+                    total_tokens=int(usage.get("total_tokens", 0)),
+                    cost_usd=float(summary.get("estimated_cost_usd", 0.0)),
+                )
+                await self.publish_dialog_history()
+                await self.ha.set_sensor(
+                    "sensor.gopro_assist_transcript",
+                    transcript or "no speech",
+                    {
+                        "full_text": transcript,
+                        "draft": local_draft,
+                        "final": transcript,
+                        "speaker": speaker_name,
+                        "stage": "final",
+                        "usage": usage,
+                        "updated_at": int(time.time()),
+                    },
+                )
+                LOGGER.info(
+                    "STT-only final transcript=%s local_draft=%s speaker=%s",
+                    transcript or "<empty>",
+                    local_draft,
+                    speaker_name,
+                )
+                return
+
             transcript = (
                 await self.transcribe_precisely(audio, local_draft)
             ).strip()

@@ -32,7 +32,9 @@ from gopro_assist.main import (
     brief_voice_response,
     follow_wheel_targets,
     high_pass_pcm16,
+    is_cloud_prompt_echo,
     is_finish_conversation,
+    is_local_non_speech_label,
     is_location_query,
     local_context_response,
     local_personality_response,
@@ -111,6 +113,23 @@ class AudioFrontEndTest(unittest.TestCase):
     def test_dialog_finish_phrase_is_explicit(self) -> None:
         self.assertTrue(is_finish_conversation("Спасибо, всё!"))
         self.assertFalse(is_finish_conversation("Расскажи всё подробно"))
+
+    def test_local_non_speech_labels_are_rejected(self) -> None:
+        self.assertTrue(is_local_non_speech_label("[музыка]"))
+        self.assertTrue(is_local_non_speech_label("(неразборчиво)"))
+        self.assertFalse(is_local_non_speech_label("Сокол, включи камеру"))
+
+    def test_cloud_prompt_echo_is_treated_as_empty(self) -> None:
+        prompt = "Русская речь. Калибровка, порог речи, Сокол, Виктор."
+        self.assertTrue(is_cloud_prompt_echo(prompt, prompt))
+        self.assertTrue(
+            is_cloud_prompt_echo(
+                "Русская речь, калибровка, порог речи, Сокол", prompt
+            )
+        )
+        self.assertFalse(
+            is_cloud_prompt_echo("Сокол, как ты думаешь, камера работает?", prompt)
+        )
 
 
 class UsageLedgerTest(unittest.TestCase):

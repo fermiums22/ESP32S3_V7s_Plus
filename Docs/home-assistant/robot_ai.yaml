@@ -93,6 +93,59 @@ automation:
           entity_id: switch.v7s_plus_gopro_power
 
 script:
+  gopro_camera_power_on:
+    alias: "GoPro: включить камеру"
+    icon: mdi:camera
+    mode: restart
+    sequence:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.v7s_plus_gopro_power
+
+  gopro_camera_power_off:
+    alias: "GoPro: выключить камеру"
+    icon: mdi:camera-off
+    mode: restart
+    sequence:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.v7s_plus_gopro_stream
+      - wait_template: >-
+          {{ is_state('binary_sensor.v7s_plus_gopro_streaming', 'off')
+             or is_state('binary_sensor.v7s_plus_gopro_connected', 'off') }}
+        timeout:
+          seconds: 15
+        continue_on_timeout: true
+      - action: switch.turn_off
+        target:
+          entity_id: switch.v7s_plus_gopro_power
+
+  gopro_camera_stream_on:
+    alias: "GoPro: включить видеопоток"
+    icon: mdi:broadcast
+    mode: restart
+    sequence:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.v7s_plus_gopro_power
+      - wait_template: >-
+          {{ is_state('binary_sensor.v7s_plus_gopro_connected', 'on') }}
+        timeout:
+          seconds: 25
+        continue_on_timeout: false
+      - action: switch.turn_on
+        target:
+          entity_id: switch.v7s_plus_gopro_stream
+
+  gopro_camera_stream_off:
+    alias: "GoPro: выключить видеопоток"
+    icon: mdi:broadcast-off
+    mode: restart
+    sequence:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.v7s_plus_gopro_stream
+
   sokol_9_go_home:
     alias: "Сокол-9: домой"
     icon: mdi:home-import-outline

@@ -1,0 +1,188 @@
+{
+  "type": "grid",
+  "column_span": 1,
+  "cards": [
+    {
+      "type": "heading",
+      "heading": "STT-консоль GoPro",
+      "heading_style": "title",
+      "icon": "mdi:console-line",
+      "grid_options": {
+        "columns": 12,
+        "rows": 1
+      }
+    },
+    {
+      "type": "custom:button-card",
+      "name": "SOKOL-9 / VOICE STT",
+      "icon": "mdi:console",
+      "show_icon": true,
+      "show_name": true,
+      "show_state": false,
+      "tap_action": {
+        "action": "none"
+      },
+      "hold_action": {
+        "action": "none"
+      },
+      "triggers_update": [
+        "sensor.gopro_assist_status",
+        "sensor.gopro_assist_transcript",
+        "sensor.gopro_assist_response",
+        "sensor.gopro_assist_dialog",
+        "sensor.gopro_stt_requests_today",
+        "sensor.gopro_stt_audio_seconds_today",
+        "sensor.gopro_stt_input_tokens_today",
+        "sensor.gopro_stt_output_tokens_today",
+        "sensor.gopro_stt_total_tokens_today",
+        "sensor.gopro_stt_cost_today"
+      ],
+      "grid_options": {
+        "columns": 12,
+        "rows": 12
+      },
+      "styles": {
+        "card": [
+          {
+            "padding": "16px"
+          },
+          {
+            "border-radius": "14px"
+          },
+          {
+            "background": "#080d12"
+          },
+          {
+            "border": "1px solid rgba(74,222,128,.28)"
+          },
+          {
+            "text-align": "left"
+          }
+        ],
+        "grid": [
+          {
+            "grid-template-areas": "\"i n status\" \"terminal terminal terminal\""
+          },
+          {
+            "grid-template-columns": "32px 1fr auto"
+          },
+          {
+            "grid-template-rows": "min-content 1fr"
+          },
+          {
+            "column-gap": "10px"
+          },
+          {
+            "row-gap": "12px"
+          }
+        ],
+        "img_cell": [
+          {
+            "grid-area": "i"
+          },
+          {
+            "width": "30px"
+          },
+          {
+            "height": "30px"
+          },
+          {
+            "justify-self": "start"
+          }
+        ],
+        "icon": [
+          {
+            "width": "27px"
+          },
+          {
+            "color": "#4ade80"
+          }
+        ],
+        "name": [
+          {
+            "grid-area": "n"
+          },
+          {
+            "justify-self": "start"
+          },
+          {
+            "align-self": "center"
+          },
+          {
+            "font-family": "ui-monospace, SFMono-Regular, Consolas, monospace"
+          },
+          {
+            "font-size": "16px"
+          },
+          {
+            "font-weight": "700"
+          },
+          {
+            "color": "#d1fae5"
+          }
+        ],
+        "custom_fields": {
+          "status": [
+            {
+              "grid-area": "status"
+            },
+            {
+              "justify-self": "end"
+            },
+            {
+              "align-self": "center"
+            },
+            {
+              "font-family": "ui-monospace, SFMono-Regular, Consolas, monospace"
+            },
+            {
+              "font-size": "12px"
+            }
+          ],
+          "terminal": [
+            {
+              "grid-area": "terminal"
+            },
+            {
+              "width": "100%"
+            },
+            {
+              "min-width": "0"
+            },
+            {
+              "height": "650px"
+            },
+            {
+              "overflow-y": "auto"
+            },
+            {
+              "overflow-x": "hidden"
+            },
+            {
+              "white-space": "normal"
+            },
+            {
+              "overflow-wrap": "anywhere"
+            },
+            {
+              "word-break": "break-word"
+            },
+            {
+              "font-family": "ui-monospace, SFMono-Regular, Consolas, monospace"
+            },
+            {
+              "font-size": "13px"
+            },
+            {
+              "line-height": "1.48"
+            }
+          ]
+        }
+      },
+      "custom_fields": {
+        "status": "[[[ const s=states['sensor.gopro_assist_status']?.state||'offline'; const labels={waiting:'ОЖИДАНИЕ',listening:'СЛУШАЮ',connecting:'ПОДКЛЮЧЕНИЕ',reconnecting:'ЖДУ GOPRO',local_stt:'WHISPER',cloud_stt:'AUDIO STT',processing:'ОБРАБОТКА',error:'ОШИБКА',offline:'OFFLINE'}; const color=s==='error'?'#f87171':s==='listening'?'#4ade80':'#60a5fa'; return `<span style=\"display:inline-flex;align-items:center;gap:7px;color:${color}\"><span style=\"width:8px;height:8px;border-radius:50%;background:${color};box-shadow:0 0 9px ${color}\"></span>${labels[s]||String(s).toUpperCase()}</span>`; ]]]",
+        "terminal": "[[[ const safe=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c])); const st=id=>states[id]?.state; const fmt=(v,f='—')=>!v||['unknown','unavailable','waiting'].includes(v)?f:v; const req=fmt(st('sensor.gopro_stt_requests_today'),'0'); const sec=fmt(st('sensor.gopro_stt_audio_seconds_today'),'0.0'); const input=fmt(st('sensor.gopro_stt_input_tokens_today'),'0'); const output=fmt(st('sensor.gopro_stt_output_tokens_today'),'0'); const total=fmt(st('sensor.gopro_stt_total_tokens_today'),'0'); const cost=fmt(st('sensor.gopro_stt_cost_today'),'0.000000'); const turns=Array.isArray(states['sensor.gopro_assist_dialog']?.attributes?.turns)?states['sensor.gopro_assist_dialog'].attributes.turns.slice(-20).reverse():[]; const header=`<div style=\"color:#94a3b8;padding-bottom:12px;border-bottom:1px solid rgba(74,222,128,.2);white-space:normal;overflow-wrap:anywhere;word-break:break-word\"><div>source: GoPro RTMP audio / 16 kHz mono</div><div>pipeline: VAD → local Whisper → quick ACK → gpt-4o-mini-transcribe</div><div style=\"display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px\"><span style=\"padding:8px;background:#0f1720;border-radius:6px\">requests <b style=\"color:#e2e8f0\">${safe(req)}</b></span><span style=\"padding:8px;background:#0f1720;border-radius:6px\">audio <b style=\"color:#e2e8f0\">${safe(sec)} s</b></span><span style=\"padding:8px;background:#0f1720;border-radius:6px\">tokens <b style=\"color:#e2e8f0\">${safe(total)}</b></span><span style=\"padding:8px;background:#0f1720;border-radius:6px\">input <b style=\"color:#e2e8f0\">${safe(input)}</b></span><span style=\"padding:8px;background:#0f1720;border-radius:6px\">output <b style=\"color:#e2e8f0\">${safe(output)}</b></span><span style=\"padding:8px;background:#0f1720;border-radius:6px\">cost <b style=\"color:#facc15\">$${safe(cost)}</b></span></div></div><div style=\"color:#4ade80;padding:12px 0 8px\">──────── РАЗГОВОР ────────</div>`; const row=t=>{const speaker=t.speaker||'Говорящий'; const acknowledgement=String(t.acknowledgement||t.assistant||'').trim(); const rawFinal=String(t.final||'').trim(); const promptEcho=/русская речь.*калибровка.*порог речи/i.test(rawFinal); const final=promptEcho?'':rawFinal; return `<div style=\"min-width:0;padding:10px 0 12px;border-bottom:1px dashed rgba(148,163,184,.16);white-space:normal;overflow-wrap:anywhere;word-break:break-word\"><div style=\"color:#60a5fa;white-space:normal;overflow-wrap:anywhere\">Сокол → ${safe(speaker)}: <span style=\"color:#fbbf24\">${safe(acknowledgement)}</span></div><div style=\"color:#e2e8f0;margin-top:5px;white-space:normal;overflow-wrap:anywhere\">—${final?` ${safe(final)}`:''}</div></div>`}; const body=turns.length?turns.map(row).join(''):''; return header+body; ]]]"
+      }
+    }
+  ]
+}

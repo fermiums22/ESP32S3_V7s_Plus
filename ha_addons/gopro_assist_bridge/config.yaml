@@ -1,6 +1,6 @@
 name: "GoPro Assist Bridge"
 description: "Voice gateway from the robot GoPro microphone to Home Assistant Assist"
-version: "0.9.0"
+version: "0.10.0"
 slug: "gopro_assist_bridge"
 init: false
 startup: application
@@ -20,6 +20,8 @@ options:
   media_player: "media_player.v7s_plus_wifi_audio"
   language: "ru_RU"
   agent_enabled: true
+  stt_only_mode: false
+  quick_acknowledgements: "Хм.,Угу.,М-м."
   openai_api_key: ""
   cloud_stt_enabled: true
   cloud_stt_model: "gpt-4o-mini-transcribe"
@@ -78,6 +80,8 @@ schema:
   media_player: str
   language: str
   agent_enabled: bool
+  stt_only_mode: bool
+  quick_acknowledgements: str
   openai_api_key: password
   cloud_stt_enabled: bool
   cloud_stt_model: str
