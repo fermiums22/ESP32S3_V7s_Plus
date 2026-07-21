@@ -56,14 +56,17 @@ ZIP будет создан в `dist/sokol9-ha-addon.zip`.
 До первого запуска проверить:
 
 - `rtsp_url` — поток GoPro `gopro_robot`;
-- `stt_engine` — локальный `stt.whisper_cpp` из add-on `Sokol-9 Whisper.cpp NoAVX`;
+- `stt_engine` — локальный `stt.faster_whisper`, используемый как дешёвый фильтр;
+- `cloud_stt_model` — `gpt-4o-mini-transcribe` для точного текста принятой фразы;
+- `cloud_stt_daily_audio_seconds_limit` — дневной предел отправленного аудио;
 - `tts_entity` — фактическая сущность Supertonic;
 - `media_player` — JBL робота;
 - `wake_phrases` — `сокол девять,сокол`;
 - `camera_entity` — `camera.robot_eyes`;
 - `home_map_entity` — найденная карта Xiaomi X20+;
 - `openai_api_key` — отдельный ключ домашнего проекта;
-- `agent_enabled` — включить после проверки остальных полей.
+- `agent_enabled` — включить после проверки остальных полей;
+- `dialog_history_turns` — `20`, чтобы окно хранило двадцать последних команд.
 
 Начальные лимиты: `$0.25` в день, `$3` в месяц, до 250 выходных токенов.
 
@@ -74,6 +77,10 @@ ZIP будет создан в `dist/sokol9-ha-addon.zip`.
 - `sensor.gopro_assist_status`;
 - `sensor.gopro_assist_transcript`;
 - `sensor.gopro_assist_response`;
+- `sensor.gopro_assist_dialog`;
+- `sensor.gopro_stt_requests_today`;
+- `sensor.gopro_stt_audio_seconds_today`;
+- `sensor.gopro_stt_cost_today`;
 - `sensor.robot_agent_input_tokens`;
 - `sensor.robot_agent_output_tokens`;
 - `sensor.robot_agent_requests_today`;

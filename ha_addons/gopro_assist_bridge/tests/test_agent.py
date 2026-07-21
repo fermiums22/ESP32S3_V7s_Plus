@@ -26,9 +26,13 @@ from gopro_assist.agent import (
 )
 from gopro_assist.main import (
     BUILTIN_PROMPT_PATH,
+    DialogHistory,
+    LUNA_PROMPT_PATH,
     SOL_ADDENDUM_PATH,
     brief_voice_response,
     follow_wheel_targets,
+    high_pass_pcm16,
+    is_finish_conversation,
     is_location_query,
     local_context_response,
     local_personality_response,
@@ -50,16 +54,63 @@ CONFIG = AgentConfig(
     max_output_tokens=250,
     history_turns=6,
     max_tool_rounds=4,
+    reasoning_effort="none",
     daily_limit_usd=0.25,
     monthly_limit_usd=3.0,
     request_reserve_usd=0.01,
     input_usd_per_million=0.15,
     cached_input_usd_per_million=0.075,
     output_usd_per_million=0.60,
+    vision_model="gpt-5.6-luna",
+    vision_prompt="test vision",
+    vision_max_output_tokens=300,
+    vision_input_usd_per_million=1.0,
+    vision_cached_input_usd_per_million=0.1,
+    vision_output_usd_per_million=6.0,
     camera_entity="camera.robot_eyes",
     home_map_entity="",
     telemetry_entities=("sensor.v7s_plus_robot_state",),
 )
+
+
+class DialogHistoryTest(unittest.TestCase):
+    def test_keeps_twenty_full_turns_and_survives_restart(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "dialog.json"
+            history = DialogHistory(path, max_turns=20, max_chars=6000)
+            for index in range(23):
+                history.start_turn(f"вопрос {index}", "Виктор")
+                history.finish_turn("длинный ответ " + str(index) + " " + "я" * 500)
+
+            restored = DialogHistory(path, max_turns=20, max_chars=6000)
+            self.assertEqual(len(restored.turns), 20)
+            self.assertEqual(restored.turns[0]["user"], "вопрос 3")
+            self.assertTrue(restored.turns[-1]["assistant"].endswith("я" * 500))
+            self.assertEqual(restored.attributes()["max_turns"], 20)
+
+    def test_message_limit_is_explicit_and_preserves_unicode(self) -> None:
+        with TemporaryDirectory() as directory:
+            history = DialogHistory(
+                Path(directory) / "dialog.json", max_turns=20, max_chars=255
+            )
+            history.start_turn("ф" * 400)
+            history.finish_turn("о" * 400)
+            self.assertEqual(len(history.turns[0]["user"]), 255)
+            self.assertEqual(len(history.turns[0]["assistant"]), 255)
+            self.assertTrue(history.turns[0]["assistant"].endswith("…"))
+
+
+class AudioFrontEndTest(unittest.TestCase):
+    def test_high_pass_removes_constant_gopro_offset(self) -> None:
+        source = array("h", [1200] * 1600).tobytes()
+        filtered = array("h")
+        filtered.frombytes(high_pass_pcm16(source))
+        self.assertEqual(len(filtered), 1600)
+        self.assertLess(abs(filtered[-1]), 10)
+
+    def test_dialog_finish_phrase_is_explicit(self) -> None:
+        self.assertTrue(is_finish_conversation("Спасибо, всё!"))
+        self.assertFalse(is_finish_conversation("Расскажи всё подробно"))
 
 
 class UsageLedgerTest(unittest.TestCase):
@@ -77,6 +128,16 @@ class UsageLedgerTest(unittest.TestCase):
             self.assertEqual(today["cached_tokens"], 400)
             self.assertEqual(today["output_tokens"], 500)
             self.assertAlmostEqual(today["cost_usd"], 0.00042)
+            self.assertAlmostEqual(today["roles"]["dialogue"]["cost_usd"], 0.00042)
+
+    def test_vision_uses_separate_rates_and_bucket(self) -> None:
+        with TemporaryDirectory() as directory:
+            ledger = UsageLedger(Path(directory) / "usage.json")
+            ledger.add({"input_tokens": 1000, "output_tokens": 100}, CONFIG,
+                       rates=(1.0, 0.1, 6.0), role="vision")
+            today = ledger.data["today"]
+            self.assertAlmostEqual(today["cost_usd"], 0.0016)
+            self.assertAlmostEqual(today["roles"]["vision"]["cost_usd"], 0.0016)
 
     def test_reserve_blocks_request_before_limit(self) -> None:
         with TemporaryDirectory() as directory:
@@ -110,6 +171,7 @@ class LocalRobotControlTest(unittest.TestCase):
         )
         self.assertIn("only model allowed to speak as Sokol-9", sol)
         self.assertIn("deterministic limiter", luna)
+        self.assertIn("компактный JSON", LUNA_PROMPT_PATH.read_text(encoding="utf-8"))
 
     def test_builtin_persona_covers_household_roles(self) -> None:
         prompt = BUILTIN_PROMPT_PATH.read_text(encoding="utf-8")

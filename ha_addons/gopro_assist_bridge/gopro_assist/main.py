@@ -36,8 +36,7 @@ from .agent import (
     WORLD_DB_PATH,
 )
 from .speaker_id import SpeakerProfiles
-from .speaker_diarization import CloudTranscriber, SpeakerDiarizer
-from .realtime import RealtimeConversation, is_finish_phrase
+from .speaker_diarization import CloudTranscriber
 from .visual_places import VisualPlaceStore
 from .memory import MEMORY_DB_PATH, MEMORY_ROOT, WorldMemory
 
@@ -52,8 +51,10 @@ CHUNK_MS = 20
 CHUNK_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * CHUNK_MS // 1000
 SPEAKER_PROFILES_PATH = Path("/data/speaker_profiles.json")
 VISUAL_PLACES_PATH = MEMORY_ROOT / "vision" / "places"
+DIALOG_HISTORY_PATH = Path("/data/dialog_history.json")
 BUILTIN_PROMPT_PATH = Path(__file__).with_name("SOKOL9_SYSTEM_PROMPT.md")
 SOL_ADDENDUM_PATH = Path(__file__).with_name("prompts") / "SOL_ROUTING_ADDENDUM.md"
+LUNA_PROMPT_PATH = Path(__file__).with_name("prompts") / "LUNA_VISION_PROMPT.md"
 
 
 @dataclass(frozen=True)
@@ -69,14 +70,16 @@ class Config:
     language: str
     agent_enabled: bool
     agent: AgentConfig
-    realtime_enabled: bool
-    realtime_model: str
-    realtime_transcription_model: str
     conversation_timeout_seconds: int
     cloud_stt_enabled: bool
     cloud_stt_model: str
-    speaker_diarization_enabled: bool
-    speaker_diarization_model: str
+    cloud_stt_prompt: str
+    cloud_stt_daily_audio_seconds_limit: float
+    cloud_stt_timeout_seconds: float
+    cloud_stt_input_usd_per_million: float
+    cloud_stt_output_usd_per_million: float
+    dialog_history_turns: int
+    dialog_message_max_chars: int
     robot_event_entities: tuple[str, ...]
     follow_distance_entities: tuple[str, str, str]
     follow_left_wheel_entity: str
@@ -87,6 +90,7 @@ class Config:
     vad_start_rms: int
     vad_end_rms: int
     vad_noise_multiplier: float
+    vad_start_rms_max: int
     vad_silence_ms: int
     vad_pre_roll_ms: int
     vad_min_speech_ms: int
@@ -127,7 +131,7 @@ class Config:
             rtsp_url=str(raw["rtsp_url"]),
             pipeline_id=str(raw.get("pipeline_id", "")).strip(),
             pipeline_name=str(raw.get("pipeline_name", "GPT")).strip(),
-            stt_engine=str(raw.get("stt_engine", "stt.whisper_cpp")).strip(),
+            stt_engine=str(raw.get("stt_engine", "stt.faster_whisper")).strip(),
             stt_language=str(raw.get("stt_language", "ru")).strip(),
             wake_phrases=phrases,
             tts_entity=str(raw.get("tts_entity", "tts.piper")),
@@ -136,17 +140,24 @@ class Config:
             agent_enabled=bool(raw.get("agent_enabled", False)),
             agent=AgentConfig(
                 api_key=str(raw.get("openai_api_key", "")).strip(),
-                model=str(raw.get("agent_model", "gpt-4o-mini")).strip(),
+                model=str(raw.get("agent_model", "gpt-5.6-sol")).strip(),
                 system_prompt=system_prompt,
-                max_output_tokens=max(32, int(raw.get("agent_max_output_tokens", 250))),
-                history_turns=max(0, int(raw.get("agent_history_turns", 6))),
+                max_output_tokens=max(64, int(raw.get("agent_max_output_tokens", 2048))),
+                history_turns=max(0, int(raw.get("agent_history_turns", 20))),
                 max_tool_rounds=max(0, int(raw.get("agent_max_tool_rounds", 4))),
-                daily_limit_usd=max(0.0, float(raw.get("agent_daily_limit_usd", 0.25))),
-                monthly_limit_usd=max(0.0, float(raw.get("agent_monthly_limit_usd", 3.0))),
-                request_reserve_usd=max(0.0, float(raw.get("agent_request_reserve_usd", 0.01))),
-                input_usd_per_million=max(0.0, float(raw.get("agent_input_usd_per_million", 0.15))),
-                cached_input_usd_per_million=max(0.0, float(raw.get("agent_cached_input_usd_per_million", 0.075))),
-                output_usd_per_million=max(0.0, float(raw.get("agent_output_usd_per_million", 0.60))),
+                reasoning_effort=str(raw.get("agent_reasoning_effort", "none")).strip(),
+                daily_limit_usd=max(0.0, float(raw.get("agent_daily_limit_usd", 1.10))),
+                monthly_limit_usd=max(0.0, float(raw.get("agent_monthly_limit_usd", 34.0))),
+                request_reserve_usd=max(0.0, float(raw.get("agent_request_reserve_usd", 0.05))),
+                input_usd_per_million=max(0.0, float(raw.get("agent_input_usd_per_million", 5.0))),
+                cached_input_usd_per_million=max(0.0, float(raw.get("agent_cached_input_usd_per_million", 0.5))),
+                output_usd_per_million=max(0.0, float(raw.get("agent_output_usd_per_million", 30.0))),
+                vision_model=str(raw.get("vision_model", "gpt-5.6-luna")).strip(),
+                vision_prompt=LUNA_PROMPT_PATH.read_text(encoding="utf-8").strip(),
+                vision_max_output_tokens=max(64, int(raw.get("vision_max_output_tokens", 300))),
+                vision_input_usd_per_million=max(0.0, float(raw.get("vision_input_usd_per_million", 1.0))),
+                vision_cached_input_usd_per_million=max(0.0, float(raw.get("vision_cached_input_usd_per_million", 0.1))),
+                vision_output_usd_per_million=max(0.0, float(raw.get("vision_output_usd_per_million", 6.0))),
                 camera_entity=str(raw.get("camera_entity", "camera.robot_eyes")).strip(),
                 home_map_entity=str(raw.get("home_map_entity", "")).strip(),
                 telemetry_entities=tuple(
@@ -155,24 +166,32 @@ class Config:
                     if item.strip()
                 ),
             ),
-            realtime_enabled=bool(raw.get("realtime_enabled", True)),
-            realtime_model=str(raw.get("realtime_model", "gpt-realtime-2.1")).strip(),
-            realtime_transcription_model=str(
-                raw.get("realtime_transcription_model", "gpt-realtime-whisper")
-            ).strip(),
             conversation_timeout_seconds=max(
-                15, min(300, int(raw.get("conversation_timeout_seconds", 60)))
+                15, min(300, int(raw.get("conversation_timeout_seconds", 45)))
             ),
             cloud_stt_enabled=bool(raw.get("cloud_stt_enabled", True)),
             cloud_stt_model=str(
                 raw.get("cloud_stt_model", "gpt-4o-mini-transcribe")
             ).strip(),
-            speaker_diarization_enabled=bool(
-                raw.get("speaker_diarization_enabled", True)
+            cloud_stt_prompt=str(raw.get("cloud_stt_prompt", "")).strip(),
+            cloud_stt_daily_audio_seconds_limit=max(
+                0.0, float(raw.get("cloud_stt_daily_audio_seconds_limit", 600))
             ),
-            speaker_diarization_model=str(
-                raw.get("speaker_diarization_model", "gpt-4o-transcribe-diarize")
-            ).strip(),
+            cloud_stt_timeout_seconds=max(
+                5.0, float(raw.get("cloud_stt_timeout_seconds", 60))
+            ),
+            cloud_stt_input_usd_per_million=max(
+                0.0, float(raw.get("cloud_stt_input_usd_per_million", 1.25))
+            ),
+            cloud_stt_output_usd_per_million=max(
+                0.0, float(raw.get("cloud_stt_output_usd_per_million", 5.0))
+            ),
+            dialog_history_turns=max(
+                1, min(100, int(raw.get("dialog_history_turns", 20)))
+            ),
+            dialog_message_max_chars=max(
+                255, min(20000, int(raw.get("dialog_message_max_chars", 6000)))
+            ),
             robot_event_entities=tuple(
                 item.strip()
                 for item in str(raw.get("robot_event_entities", "")).split(",")
@@ -212,11 +231,12 @@ class Config:
             ),
             vad_start_rms=start,
             vad_end_rms=end,
-            vad_noise_multiplier=float(raw.get("vad_noise_multiplier", 3.0)),
-            vad_silence_ms=max(CHUNK_MS, int(raw.get("vad_silence_ms", 700))),
-            vad_pre_roll_ms=max(0, int(raw.get("vad_pre_roll_ms", 400))),
-            vad_min_speech_ms=max(CHUNK_MS, int(raw.get("vad_min_speech_ms", 300))),
-            vad_max_segment_ms=max(1000, int(raw.get("vad_max_segment_ms", 12000))),
+            vad_noise_multiplier=float(raw.get("vad_noise_multiplier", 1.35)),
+            vad_start_rms_max=max(start, int(raw.get("vad_start_rms_max", 480))),
+            vad_silence_ms=max(CHUNK_MS, int(raw.get("vad_silence_ms", 650))),
+            vad_pre_roll_ms=max(0, int(raw.get("vad_pre_roll_ms", 450))),
+            vad_min_speech_ms=max(CHUNK_MS, int(raw.get("vad_min_speech_ms", 360))),
+            vad_max_segment_ms=max(1000, int(raw.get("vad_max_segment_ms", 25000))),
             debug=bool(raw.get("debug", False)),
         )
 
@@ -227,6 +247,26 @@ def pcm_rms(chunk: bytes) -> int:
     if not samples:
         return 0
     return math.isqrt(sum(sample * sample for sample in samples) // len(samples))
+
+
+def high_pass_pcm16(pcm: bytes, cutoff_hz: float = 90.0) -> bytes:
+    """Remove GoPro rumble/DC with the same cheap filter as the desktop STT."""
+    source = array("h")
+    source.frombytes(pcm)
+    if len(source) < 2:
+        return pcm
+    rc = 1.0 / (2.0 * math.pi * cutoff_hz)
+    dt = 1.0 / SAMPLE_RATE
+    alpha = rc / (rc + dt)
+    output = array("h", [0])
+    previous_input = float(source[0])
+    previous_output = 0.0
+    for sample in source[1:]:
+        value = alpha * (previous_output + float(sample) - previous_input)
+        output.append(max(-32768, min(32767, round(value))))
+        previous_input = float(sample)
+        previous_output = value
+    return output.tobytes()
 
 
 class AdaptiveVad:
@@ -244,12 +284,15 @@ class AdaptiveVad:
     @property
     def start_threshold(self) -> int:
         adaptive = int(self.noise_floor * self.config.vad_noise_multiplier)
-        return max(self.config.vad_start_rms, adaptive)
+        return max(
+            self.config.vad_start_rms,
+            min(adaptive, self.config.vad_start_rms_max),
+        )
 
     @property
     def end_threshold(self) -> int:
-        adaptive = int(self.noise_floor * 1.6)
-        return max(self.config.vad_end_rms, adaptive)
+        adaptive = int(self.noise_floor * 1.15)
+        return min(self.start_threshold, max(self.config.vad_end_rms, adaptive))
 
     def feed(self, chunk: bytes) -> tuple[bytes | None, int]:
         rms = pcm_rms(chunk)
@@ -294,7 +337,9 @@ class AdaptiveVad:
         if not complete:
             return None, rms
 
-        audio = b"".join(self.speech)
+        trim_chunks = max(0, self.silence_ms // CHUNK_MS - 7)
+        captured = self.speech[:-trim_chunks] if trim_chunks else self.speech
+        audio = high_pass_pcm16(b"".join(captured))
         duration = self.speech_ms
         trailing = self.speech[-max(1, self.config.vad_pre_roll_ms // CHUNK_MS) :]
         self.pre_roll.extend(trailing)
@@ -311,6 +356,66 @@ class AdaptiveVad:
         self.speech_ms = 0
         self.silence_ms = 0
         self.start_hits = 0
+
+
+class DialogHistory:
+    """Persistent UI history; one item represents one user/assistant turn."""
+
+    def __init__(self, path: Path, max_turns: int, max_chars: int) -> None:
+        self.path = path
+        self.max_turns = max_turns
+        self.max_chars = max_chars
+        self.turns = self._load()
+
+    def _load(self) -> list[dict[str, Any]]:
+        try:
+            value = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)][-self.max_turns :]
+
+    def _clip(self, text: str) -> str:
+        text = str(text).strip()
+        if len(text) <= self.max_chars:
+            return text
+        return text[: self.max_chars - 1].rstrip() + "…"
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(self.turns, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(self.path)
+
+    def start_turn(self, user: str, speaker: str = "") -> None:
+        self.turns.append(
+            {
+                "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "user": self._clip(user),
+                "assistant": "",
+                "speaker": self._clip(speaker),
+            }
+        )
+        self.turns = self.turns[-self.max_turns :]
+        self._save()
+
+    def finish_turn(self, assistant: str) -> None:
+        if not self.turns:
+            return
+        self.turns[-1]["assistant"] = self._clip(assistant)
+        self._save()
+
+    def attributes(self) -> dict[str, Any]:
+        return {
+            "turns": list(self.turns),
+            "turn_count": len(self.turns),
+            "max_turns": self.max_turns,
+            "updated_at": int(time.time()),
+        }
 
 
 class HomeAssistantClient:
@@ -657,6 +762,20 @@ def strip_wake_phrase(text: str, phrases: tuple[str, ...]) -> tuple[bool, str]:
     return False, text
 
 
+def is_finish_conversation(text: str) -> bool:
+    normalized = re.sub(
+        r"[^а-яa-z0-9]+", " ", text.casefold().replace("ё", "е")
+    ).strip()
+    return normalized in {
+        "все",
+        "закончили",
+        "хватит",
+        "спасибо все",
+        "до связи",
+        "конец разговора",
+    }
+
+
 def local_robot_command(text: str) -> str | None:
     normalized = re.sub(r"[^а-яa-z0-9]+", " ", text.casefold().replace("ё", "е")).strip()
     if re.search(
@@ -789,8 +908,11 @@ class Bridge:
         self.speaker_profiles = SpeakerProfiles(SPEAKER_PROFILES_PATH)
         self.visual_places = VisualPlaceStore(VISUAL_PLACES_PATH)
         self.conversation_until = 0.0
-        self.realtime_retry_after = 0.0
-        self.speaker_tasks: set[asyncio.Task[None]] = set()
+        self.dialog_history = DialogHistory(
+            DIALOG_HISTORY_PATH,
+            config.dialog_history_turns,
+            config.dialog_message_max_chars,
+        )
         self.agent = (
             OpenAIAgent(
                 config.agent,
@@ -803,45 +925,16 @@ class Bridge:
             if config.agent_enabled and ha.session is not None
             else None
         )
-        realtime_instructions = (
-            config.agent.system_prompt
-            + "\n\n"
-            + self.memory.prompt_context()
-            + "\n\nТы ведёшь живой устный разговор на русском языке. "
-            "Отвечай кратко, обычно одним-двумя предложениями. "
-            "Не требуй повторять позывной Сокол: пользователь уже открыл диалог. "
-            "Всегда отвечай только по-русски, даже если услышал иностранное слово. "
-            "Каждый устный ответ — одно короткое предложение без списков и предисловий. "
-            "Не утверждай, что выполнил физическое действие робота, если оно не было выполнено локальным контроллером."
-        )
-        self.realtime = (
-            RealtimeConversation(
-                api_key=config.agent.api_key,
-                model=config.realtime_model,
-                transcription_model=config.realtime_transcription_model,
-                instructions=realtime_instructions,
-                max_output_tokens=config.agent.max_output_tokens,
-            )
-            if config.realtime_enabled and config.agent.api_key
-            else None
-        )
-        self.diarizer = (
-            SpeakerDiarizer(
-                api_key=config.agent.api_key,
-                session=ha.session,
-                profiles=self.speaker_profiles,
-                model=config.speaker_diarization_model,
-            )
-            if config.speaker_diarization_enabled
-            and config.agent.api_key
-            and ha.session is not None
-            else None
-        )
         self.cloud_transcriber = (
             CloudTranscriber(
                 api_key=config.agent.api_key,
                 session=ha.session,
                 model=config.cloud_stt_model,
+                prompt=config.cloud_stt_prompt,
+                daily_audio_seconds_limit=config.cloud_stt_daily_audio_seconds_limit,
+                timeout_seconds=config.cloud_stt_timeout_seconds,
+                input_usd_per_million=config.cloud_stt_input_usd_per_million,
+                output_usd_per_million=config.cloud_stt_output_usd_per_million,
             )
             if config.cloud_stt_enabled and config.agent.api_key and ha.session is not None
             else None
@@ -849,7 +942,7 @@ class Bridge:
 
     @property
     def conversation_active(self) -> bool:
-        return self.realtime is not None and time.monotonic() < self.conversation_until
+        return time.monotonic() < self.conversation_until
 
     def extend_conversation(self) -> None:
         self.conversation_until = (
@@ -858,60 +951,73 @@ class Bridge:
 
     async def finish_conversation(self) -> None:
         self.conversation_until = 0.0
-        if self.realtime is not None:
-            await self.realtime.close()
 
     async def deliver_response(self, response: str) -> None:
         if not response:
             response = "Команда выполнена без текстового ответа."
-        response = brief_voice_response(response, max_words=10)
+        response = str(response).strip()
+        self.dialog_history.finish_turn(response)
         await self.ha.set_sensor(
             "sensor.gopro_assist_response",
             response,
-            {"updated_at": int(time.time()), "dialog_active": self.conversation_active},
+            {
+                "full_text": response,
+                "updated_at": int(time.time()),
+                "dialog_active": self.conversation_active,
+            },
         )
+        await self.publish_dialog_history()
         await self.ha.set_sensor("sensor.gopro_assist_status", "speaking")
         await self.ha.speak(response)
         self.suppress_until = time.monotonic() + max(
-            2.0, min(20.0, len(response) / 15.0 + 1.0)
+            2.0, min(120.0, len(response) / 11.0 + 2.0)
         )
         LOGGER.info("response sent to %s: %s", self.config.media_player, response)
 
-    def identify_speaker_in_background(self, audio: bytes) -> None:
-        if self.diarizer is None or not self.diarizer.ready:
+    async def publish_dialog_history(self) -> None:
+        count = len(self.dialog_history.turns)
+        await self.ha.set_sensor(
+            "sensor.gopro_assist_dialog",
+            f"{count} из {self.dialog_history.max_turns}",
+            self.dialog_history.attributes(),
+        )
+
+    async def publish_stt_usage(self) -> None:
+        if self.cloud_transcriber is None:
             return
-        task = asyncio.create_task(self.identify_speaker_precisely(audio))
-        self.speaker_tasks.add(task)
-        task.add_done_callback(self.speaker_tasks.discard)
-
-    async def identify_speaker_precisely(self, audio: bytes) -> None:
-        assert self.diarizer is not None
-        try:
-            result = await self.diarizer.identify(audio)
-            if result is None:
-                return
-            await self.ha.set_sensor(
-                "sensor.sokol_9_speaker",
-                result.speaker,
+        summary = self.cloud_transcriber.today_summary()
+        await asyncio.gather(
+            self.ha.set_sensor(
+                "sensor.gopro_stt_requests_today",
+                str(summary["requests"]),
+                {"model": self.config.cloud_stt_model},
+            ),
+            self.ha.set_sensor(
+                "sensor.gopro_stt_audio_seconds_today",
+                f'{summary["audio_sent_seconds"]:.1f}',
+                {"limit_seconds": summary["daily_audio_seconds_limit"]},
+            ),
+            self.ha.set_sensor(
+                "sensor.gopro_stt_cost_today",
+                f'{summary["estimated_cost_usd"]:.6f}',
                 {
-                    "engine": self.config.speaker_diarization_model,
-                    "voice_seconds": round(result.seconds, 2),
-                    "updated_at": int(time.time()),
+                    "unit_of_measurement": "USD",
+                    "input_tokens": summary["input_tokens"],
+                    "output_tokens": summary["output_tokens"],
                 },
-            )
-            LOGGER.info("known speaker identified=%s", result.speaker)
-        except asyncio.CancelledError:
-            raise
-        except Exception as err:
-            LOGGER.warning("speaker diarization failed: %s", err)
+            ),
+        )
 
-    async def transcribe_wake_turn(self, audio: bytes) -> str:
-        if self.cloud_transcriber is not None:
-            try:
-                return await self.cloud_transcriber.transcribe(audio)
-            except Exception as err:
-                LOGGER.warning("cloud STT failed; using local fallback: %s", err)
-        return await self.ha.run_stt(audio)
+    async def transcribe_precisely(self, audio: bytes, local_draft: str) -> str:
+        if self.cloud_transcriber is None:
+            return local_draft
+        try:
+            transcript = await self.cloud_transcriber.transcribe(audio)
+            await self.publish_stt_usage()
+            return transcript or local_draft
+        except Exception as err:
+            LOGGER.warning("cloud STT failed; using local draft: %s", err)
+            return local_draft
 
     async def acknowledge_long_request(self) -> None:
         phrases = ("Слышу.", "Понял, думаю.", "Секунду.")
@@ -1122,7 +1228,7 @@ class Bridge:
             except asyncio.TimeoutError:
                 pass
 
-    async def handle_segment(self, audio: bytes) -> None:
+    async def _handle_segment_legacy(self, audio: bytes) -> None:
         try:
             await self.ha.set_sensor(
                 "sensor.gopro_assist_status", "recognizing", {"audio_bytes": len(audio)}
@@ -1299,6 +1405,159 @@ class Bridge:
             if time.monotonic() >= self.suppress_until:
                 await self.ha.set_sensor("sensor.gopro_assist_status", "listening")
 
+    async def handle_segment(self, audio: bytes) -> None:
+        """Run the proven local-gate/cloud-STT flow on one GoPro phrase."""
+        history_started = False
+        try:
+            await self.ha.set_sensor(
+                "sensor.gopro_assist_status",
+                "local_stt",
+                {"audio_bytes": len(audio), "source": "gopro_rtsp"},
+            )
+            local_draft = (await self.ha.run_stt(audio)).strip()
+            if not local_draft:
+                LOGGER.info("local STT gate rejected an empty phrase")
+                return
+
+            draft_addressed, _ = strip_wake_phrase(
+                local_draft, self.config.wake_phrases
+            )
+            continued = self.conversation_active
+            if not draft_addressed and not continued:
+                LOGGER.info("local STT gate ignored outside-dialog text: %s", local_draft)
+                return
+
+            # Match the desktop prototype: acknowledge immediately after the
+            # cheap local gate, then spend Audio API time only on accepted speech.
+            await self.acknowledge_long_request()
+            await self.ha.set_sensor(
+                "sensor.gopro_assist_status",
+                "cloud_stt" if self.cloud_transcriber is not None else "recognized",
+            )
+            transcript = (
+                await self.transcribe_precisely(audio, local_draft)
+            ).strip()
+            if not transcript:
+                LOGGER.info("precise STT returned no text")
+                return
+
+            final_addressed, command = strip_wake_phrase(
+                transcript, self.config.wake_phrases
+            )
+            if continued:
+                # A wake word is optional while the dialogue window is open.
+                command = command if final_addressed else transcript
+            elif not final_addressed:
+                # The local gate heard the wake word, but the precise pass may
+                # normalize or omit it. Keep the precise text instead of losing
+                # an otherwise valid command.
+                command = transcript
+
+            if is_finish_conversation(command):
+                self.dialog_history.start_turn(transcript)
+                history_started = True
+                await self.publish_dialog_history()
+                await self.finish_conversation()
+                await self.deliver_response(
+                    "Хорошо, закончили. Позови меня, когда понадоблюсь."
+                )
+                return
+
+            self.extend_conversation()
+            await self.ha.set_sensor(
+                "sensor.gopro_assist_transcript",
+                transcript,
+                {
+                    "full_text": transcript,
+                    "local_draft": local_draft,
+                    "accepted": True,
+                    "continued": continued and not final_addressed,
+                    "command": command,
+                    "updated_at": int(time.time()),
+                },
+            )
+            LOGGER.info(
+                "STT accepted transcript=%s local_draft=%s", transcript, local_draft
+            )
+
+            response: str | None
+            speaker_match = None
+            enrollment_name = speaker_enrollment_name(command)
+            if enrollment_name:
+                speaker_name = enrollment_name
+            else:
+                speaker_match = self.speaker_profiles.identify(audio)
+                speaker_name = speaker_match[0] if speaker_match else "Говорящий"
+            self.dialog_history.start_turn(transcript, speaker_name)
+            history_started = True
+            await self.publish_dialog_history()
+            await self.ha.set_sensor(
+                "sensor.sokol_9_speaker",
+                speaker_name,
+                {
+                    "distance": speaker_match[1] if speaker_match else None,
+                    "updated_at": int(time.time()),
+                },
+            )
+
+            if not command:
+                response = "Слушаю. Можешь говорить дальше без слова Сокол."
+            else:
+                await self.ha.set_sensor("sensor.gopro_assist_status", "thinking")
+                place_label = place_enrollment_label(command)
+                location_query = is_location_query(command)
+                if enrollment_name:
+                    try:
+                        samples = self.speaker_profiles.enroll(enrollment_name, audio)
+                        response = (
+                            f"Голос {enrollment_name} записан. "
+                            f"Образец {samples} из трёх."
+                        )
+                    except ValueError:
+                        response = (
+                            "Не хватило чистого голоса. Повтори фразу ближе ко мне."
+                        )
+                elif place_label:
+                    response = await self.enroll_visual_place(place_label)
+                elif location_query:
+                    response = await self.identify_visual_place()
+                else:
+                    response = local_personality_response(command)
+                    if response is None:
+                        response = local_context_response(command)
+                    if response is None:
+                        response = await self.handle_local_robot_command(command)
+                    if response is None and self.agent is not None:
+                        prompt = (
+                            f"[Говорит: {speaker_name}] {command}"
+                            if speaker_match else command
+                        )
+                        try:
+                            response = await self.agent.ask(prompt)
+                        except BudgetExceeded:
+                            response = (
+                                "Лимит расходов достигнут. Облачный агент отключён."
+                            )
+                    if response is None:
+                        response = await self.ha.run_intent(command)
+
+            await self.deliver_response(response or "")
+            self.extend_conversation()
+        except Exception as err:
+            LOGGER.exception("voice request failed")
+            if history_started:
+                self.dialog_history.finish_turn(f"Ошибка: {str(err)[:500]}")
+                with contextlib.suppress(Exception):
+                    await self.publish_dialog_history()
+            await self.ha.set_sensor(
+                "sensor.gopro_assist_status",
+                "error",
+                {"error": str(err)[:500], "updated_at": int(time.time())},
+            )
+        finally:
+            if time.monotonic() >= self.suppress_until:
+                await self.ha.set_sensor("sensor.gopro_assist_status", "listening")
+
     async def read_ffmpeg_stderr(self, stream: asyncio.StreamReader) -> None:
         while line := await stream.readline():
             message = line.decode(errors="replace").strip()
@@ -1424,8 +1683,6 @@ class Bridge:
                 await self.stop_following()
             with contextlib.suppress(Exception):
                 await self.finish_conversation()
-            for task in self.speaker_tasks:
-                task.cancel()
             media_task.cancel()
             event_task.cancel()
             follow_task.cancel()
@@ -1435,9 +1692,6 @@ class Bridge:
                 await event_task
             with contextlib.suppress(asyncio.CancelledError):
                 await follow_task
-            for task in tuple(self.speaker_tasks):
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
 
 
 async def async_main() -> None:
@@ -1462,8 +1716,10 @@ async def async_main() -> None:
             loop.add_signal_handler(signum, bridge.stop_event.set)
         await ha.set_sensor("sensor.gopro_assist_transcript", "waiting")
         await ha.set_sensor("sensor.gopro_assist_response", "waiting")
-        if config.agent_enabled:
-            await bridge.agent._publish_usage()  # type: ignore[union-attr]
+        await bridge.publish_dialog_history()
+        await bridge.publish_stt_usage()
+        if bridge.agent is not None:
+            await bridge.agent._publish_usage()
         await bridge.run()
 
 

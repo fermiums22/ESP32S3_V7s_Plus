@@ -33,12 +33,19 @@ class AgentConfig:
     max_output_tokens: int
     history_turns: int
     max_tool_rounds: int
+    reasoning_effort: str
     daily_limit_usd: float
     monthly_limit_usd: float
     request_reserve_usd: float
     input_usd_per_million: float
     cached_input_usd_per_million: float
     output_usd_per_million: float
+    vision_model: str
+    vision_prompt: str
+    vision_max_output_tokens: int
+    vision_input_usd_per_million: float
+    vision_cached_input_usd_per_million: float
+    vision_output_usd_per_million: float
     camera_entity: str
     home_map_entity: str
     telemetry_entities: tuple[str, ...]
@@ -229,9 +236,9 @@ class UsageLedger:
         }
 
     @staticmethod
-    def _counters() -> dict[str, int | float]:
+    def _counters() -> dict[str, Any]:
         return {"requests": 0, "input_tokens": 0, "cached_tokens": 0,
-                "output_tokens": 0, "cost_usd": 0.0}
+                "output_tokens": 0, "cost_usd": 0.0, "roles": {}}
 
     def _load(self) -> dict[str, Any]:
         try:
@@ -265,17 +272,28 @@ class UsageLedger:
         ):
             raise BudgetExceeded("monthly OpenAI budget reached")
 
-    def add(self, usage: dict[str, Any], config: AgentConfig) -> None:
+    def add(
+        self,
+        usage: dict[str, Any],
+        config: AgentConfig,
+        rates: tuple[float, float, float] | None = None,
+        role: str = "dialogue",
+    ) -> None:
         self._roll_periods()
         input_tokens = int(usage.get("input_tokens", 0))
         output_tokens = int(usage.get("output_tokens", 0))
         details = usage.get("input_tokens_details") or {}
         cached_tokens = min(input_tokens, int(details.get("cached_tokens", 0)))
         uncached_tokens = input_tokens - cached_tokens
+        input_rate, cached_rate, output_rate = rates or (
+            config.input_usd_per_million,
+            config.cached_input_usd_per_million,
+            config.output_usd_per_million,
+        )
         cost = (
-            uncached_tokens * config.input_usd_per_million
-            + cached_tokens * config.cached_input_usd_per_million
-            + output_tokens * config.output_usd_per_million
+            uncached_tokens * input_rate
+            + cached_tokens * cached_rate
+            + output_tokens * output_rate
         ) / 1_000_000
         for period in ("today", "this_month", "lifetime"):
             counters = self.data[period]
@@ -284,6 +302,18 @@ class UsageLedger:
             counters["cached_tokens"] += cached_tokens
             counters["output_tokens"] += output_tokens
             counters["cost_usd"] = round(float(counters["cost_usd"]) + cost, 8)
+            roles = counters.setdefault("roles", {})
+            role_counters = roles.setdefault(role, {
+                "requests": 0, "input_tokens": 0, "cached_tokens": 0,
+                "output_tokens": 0, "cost_usd": 0.0,
+            })
+            role_counters["requests"] += 1
+            role_counters["input_tokens"] += input_tokens
+            role_counters["cached_tokens"] += cached_tokens
+            role_counters["output_tokens"] += output_tokens
+            role_counters["cost_usd"] = round(
+                float(role_counters["cost_usd"]) + cost, 8
+            )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.data, ensure_ascii=False), encoding="utf-8")
 
@@ -561,6 +591,10 @@ class OpenAIAgent:
         self.ledger._roll_periods()
         today = self.ledger.data["today"]
         month = self.ledger.data["this_month"]
+        roles = month.get("roles") or {}
+        dialogue_cost = float((roles.get("dialogue") or {}).get("cost_usd", 0.0))
+        vision_cost = float((roles.get("vision") or {}).get("cost_usd", 0.0))
+        remaining = max(0.0, self.config.monthly_limit_usd - float(month["cost_usd"]))
         await self.sensor_callback("sensor.robot_agent_input_tokens", str(today["input_tokens"]), {
             "cached_tokens_today": today["cached_tokens"],
             "input_tokens_month": month["input_tokens"], "period": self.ledger.data["day"]})
@@ -573,9 +607,15 @@ class OpenAIAgent:
             "blocked": blocked})
         await self.sensor_callback("sensor.robot_agent_cost_month", f"{month['cost_usd']:.6f}", {
             "unit_of_measurement": "USD", "limit_usd": self.config.monthly_limit_usd,
-            "blocked": blocked})
+            "remaining_usd": round(remaining, 6), "dialogue_usd": dialogue_cost,
+            "vision_usd": vision_cost, "blocked": blocked})
 
-    async def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _request(
+        self,
+        payload: dict[str, Any],
+        rates: tuple[float, float, float] | None = None,
+        role: str = "dialogue",
+    ) -> dict[str, Any]:
         self.ledger.ensure_allowed(self.config)
         headers = {"Authorization": f"Bearer {self.config.api_key}",
                    "Content-Type": "application/json"}
@@ -584,7 +624,7 @@ class OpenAIAgent:
             if response.status >= 300:
                 raise RuntimeError(f"OpenAI response {response.status}: {body[:1000]}")
         result = json.loads(body)
-        self.ledger.add(result.get("usage") or {}, self.config)
+        self.ledger.add(result.get("usage") or {}, self.config, rates, role)
         await self._publish_usage()
         return result
 
@@ -598,6 +638,26 @@ class OpenAIAgent:
                 if content.get("type") == "output_text":
                     chunks.append(str(content.get("text", "")))
         return "".join(chunks).strip()
+
+    async def _analyze_image(self, image: str, observation: str) -> str:
+        response = await self._request({
+            "model": self.config.vision_model,
+            "instructions": self.config.vision_prompt,
+            "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": observation},
+                {"type": "input_image", "image_url": image, "detail": "low"},
+            ]}],
+            "reasoning": {"effort": "none"},
+            "text": {"verbosity": "low"},
+            "max_output_tokens": self.config.vision_max_output_tokens,
+            "store": False,
+        }, rates=(
+            self.config.vision_input_usd_per_million,
+            self.config.vision_cached_input_usd_per_million,
+            self.config.vision_output_usd_per_million,
+        ), role="vision")
+        packet = self._output_text(response)
+        return packet or '{"summary":"Кадр не удалось описать","warnings":["empty vision response"]}'
 
     async def _execute_tool(self, call: dict[str, Any]) -> tuple[str, str | None]:
         name = str(call.get("name", ""))
@@ -617,8 +677,13 @@ class OpenAIAgent:
                 image = await self.tools.camera_data_url(self.config.camera_entity)
                 telemetry = await self.tools.telemetry_snapshot(self.config.telemetry_entities)
                 events = self.events.since_last_frame()
-                return (f"Current robot camera frame attached. State: {telemetry}. "
-                        f"Events since previous frame: {events}"), image
+                packet = await self._analyze_image(
+                    image,
+                    "Опиши обстановку перед роботом. Укажи людей, препятствия, "
+                    "возможную комнату и изменения. Не выдумывай личности. "
+                    f"Телеметрия: {telemetry}. События: {events}",
+                )
+                return f"LUNA_PACKET robot_camera: {packet}", None
             if name == "discover_navigation_sources":
                 return await self.tools.discover_navigation_sources(), None
             if name == "look_at_home_map":
@@ -628,7 +693,12 @@ class OpenAIAgent:
                                             await self.tools.discover_navigation_sources())},
                                        ensure_ascii=False), None)
                 image = await self.tools.media_entity_data_url(self.config.home_map_entity)
-                return "Current Xiaomi X20+ LDS home map attached.", image
+                packet = await self._analyze_image(
+                    image,
+                    "Изучи актуальную LDS-карту Xiaomi X20+. Перечисли видимые "
+                    "комнаты, проходы и положение пылесоса, сохраняя неопределённость.",
+                )
+                return f"LUNA_PACKET home_map: {packet}", None
             if name == "remember_artifact":
                 return self.memory.remember_artifact(**args), None
             if name == "find_artifacts":
@@ -653,6 +723,8 @@ class OpenAIAgent:
             "instructions": instructions,
             "input": input_items,
             "tools": TOOLS,
+            "reasoning": {"effort": self.config.reasoning_effort},
+            "text": {"verbosity": "low"},
             "max_output_tokens": self.config.max_output_tokens,
             "store": False,
         }
@@ -677,6 +749,8 @@ class OpenAIAgent:
                     "instructions": instructions,
                     "input": [*(response.get("output") or []), *next_input],
                     "tools": TOOLS,
+                    "reasoning": {"effort": self.config.reasoning_effort},
+                    "text": {"verbosity": "low"},
                     "max_output_tokens": self.config.max_output_tokens,
                     "store": False,
                 })

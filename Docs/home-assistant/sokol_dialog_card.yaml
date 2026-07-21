@@ -1,0 +1,25 @@
+type: markdown
+title: "💬 Диалог с Соколом"
+content: >-
+  {% set turns = state_attr('sensor.gopro_assist_dialog', 'turns') or [] %}
+  {% if turns | length == 0 %}
+  _Пока нет распознанных команд._
+  {% else %}
+  {% for turn in turns | reverse %}
+  **{{ turn.speaker or 'Говорящий' }}:** {{ turn.user }}
+
+  **Сокол-9:** {{ turn.assistant or '…' }}
+
+  {% if not loop.last %}---{% endif %}
+  {% endfor %}
+  {% endif %}
+card_mod:
+  style: |
+    ha-card {
+      max-height: 720px;
+      overflow-y: auto;
+    }
+    ha-markdown {
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }

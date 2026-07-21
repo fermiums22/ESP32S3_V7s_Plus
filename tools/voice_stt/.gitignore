@@ -1,0 +1,14 @@
+audio_api_key.txt
+audio_secrets.txt
+secrets.txt
+audio_usage.json
+active_speaker.json
+free_usage.json
+transcripts/
+preview_audio/
+quick_reply_cache/
+speaker_models/*.onnx
+speaker_profiles/
+.venv/
+.tts_cache/
+__pycache__/
