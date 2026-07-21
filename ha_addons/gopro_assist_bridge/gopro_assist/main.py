@@ -50,6 +50,7 @@ SPEAKER_PROFILES_PATH = Path("/data/speaker_profiles.json")
 VISUAL_PLACES_PATH = MEMORY_ROOT / "vision" / "places"
 BUILTIN_PROMPT_PATH = Path(__file__).with_name("SOKOL9_SYSTEM_PROMPT.md")
 SOL_ADDENDUM_PATH = Path(__file__).with_name("prompts") / "SOL_ROUTING_ADDENDUM.md"
+LUNA_PROMPT_PATH = Path(__file__).with_name("prompts") / "LUNA_VISION_PROMPT.md"
 
 
 @dataclass(frozen=True)
@@ -124,17 +125,24 @@ class Config:
             agent_enabled=bool(raw.get("agent_enabled", False)),
             agent=AgentConfig(
                 api_key=str(raw.get("openai_api_key", "")).strip(),
-                model=str(raw.get("agent_model", "gpt-4o-mini")).strip(),
+                model=str(raw.get("agent_model", "gpt-5.6-sol")).strip(),
                 system_prompt=system_prompt,
-                max_output_tokens=max(32, int(raw.get("agent_max_output_tokens", 250))),
+                max_output_tokens=max(64, int(raw.get("agent_max_output_tokens", 512))),
                 history_turns=max(0, int(raw.get("agent_history_turns", 6))),
                 max_tool_rounds=max(0, int(raw.get("agent_max_tool_rounds", 4))),
-                daily_limit_usd=max(0.0, float(raw.get("agent_daily_limit_usd", 0.25))),
-                monthly_limit_usd=max(0.0, float(raw.get("agent_monthly_limit_usd", 3.0))),
-                request_reserve_usd=max(0.0, float(raw.get("agent_request_reserve_usd", 0.01))),
-                input_usd_per_million=max(0.0, float(raw.get("agent_input_usd_per_million", 0.15))),
-                cached_input_usd_per_million=max(0.0, float(raw.get("agent_cached_input_usd_per_million", 0.075))),
-                output_usd_per_million=max(0.0, float(raw.get("agent_output_usd_per_million", 0.60))),
+                reasoning_effort=str(raw.get("agent_reasoning_effort", "none")).strip(),
+                daily_limit_usd=max(0.0, float(raw.get("agent_daily_limit_usd", 1.10))),
+                monthly_limit_usd=max(0.0, float(raw.get("agent_monthly_limit_usd", 34.0))),
+                request_reserve_usd=max(0.0, float(raw.get("agent_request_reserve_usd", 0.05))),
+                input_usd_per_million=max(0.0, float(raw.get("agent_input_usd_per_million", 5.0))),
+                cached_input_usd_per_million=max(0.0, float(raw.get("agent_cached_input_usd_per_million", 0.5))),
+                output_usd_per_million=max(0.0, float(raw.get("agent_output_usd_per_million", 30.0))),
+                vision_model=str(raw.get("vision_model", "gpt-5.6-luna")).strip(),
+                vision_prompt=LUNA_PROMPT_PATH.read_text(encoding="utf-8").strip(),
+                vision_max_output_tokens=max(64, int(raw.get("vision_max_output_tokens", 300))),
+                vision_input_usd_per_million=max(0.0, float(raw.get("vision_input_usd_per_million", 1.0))),
+                vision_cached_input_usd_per_million=max(0.0, float(raw.get("vision_cached_input_usd_per_million", 0.1))),
+                vision_output_usd_per_million=max(0.0, float(raw.get("vision_output_usd_per_million", 6.0))),
                 camera_entity=str(raw.get("camera_entity", "camera.robot_eyes")).strip(),
                 home_map_entity=str(raw.get("home_map_entity", "")).strip(),
                 telemetry_entities=tuple(

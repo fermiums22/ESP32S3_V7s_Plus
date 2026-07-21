@@ -1,6 +1,6 @@
 name: "GoPro Assist Bridge"
 description: "Voice gateway from the robot GoPro microphone to Home Assistant Assist"
-version: "0.7.0"
+version: "0.8.0"
 slug: "gopro_assist_bridge"
 init: false
 startup: application
@@ -19,19 +19,25 @@ options:
   tts_entity: "tts.piper"
   media_player: "media_player.v7s_plus_wifi_audio"
   language: "ru_RU"
-  agent_enabled: false
+  agent_enabled: true
   openai_api_key: ""
-  agent_model: "gpt-4o-mini"
+  agent_model: "gpt-5.6-sol"
   agent_system_prompt: "@builtin"
-  agent_max_output_tokens: 250
+  agent_max_output_tokens: 512
   agent_history_turns: 6
   agent_max_tool_rounds: 4
-  agent_daily_limit_usd: 0.25
-  agent_monthly_limit_usd: 3.0
-  agent_request_reserve_usd: 0.01
-  agent_input_usd_per_million: 0.15
-  agent_cached_input_usd_per_million: 0.075
-  agent_output_usd_per_million: 0.60
+  agent_reasoning_effort: "none"
+  agent_daily_limit_usd: 1.10
+  agent_monthly_limit_usd: 34.0
+  agent_request_reserve_usd: 0.05
+  agent_input_usd_per_million: 5.0
+  agent_cached_input_usd_per_million: 0.5
+  agent_output_usd_per_million: 30.0
+  vision_model: "gpt-5.6-luna"
+  vision_max_output_tokens: 300
+  vision_input_usd_per_million: 1.0
+  vision_cached_input_usd_per_million: 0.1
+  vision_output_usd_per_million: 6.0
   camera_entity: "camera.robot_eyes"
   home_map_entity: ""
   camera_telemetry_entities: "sensor.v7s_plus_robot_state,sensor.v7s_plus_front_distance_left,sensor.v7s_plus_front_distance_center,sensor.v7s_plus_front_distance_right,sensor.v7s_plus_proximity_motion,sensor.v7s_plus_stm32_battery_voltage,sensor.v7s_plus_stm32_battery_current,binary_sensor.v7s_plus_left_motor_fault,binary_sensor.v7s_plus_right_motor_fault,binary_sensor.v7s_plus_robot_docked"
@@ -45,7 +51,7 @@ options:
   vad_start_rms: 700
   vad_end_rms: 400
   vad_noise_multiplier: 3.0
-  vad_silence_ms: 700
+  vad_silence_ms: 400
   vad_pre_roll_ms: 400
   vad_min_speech_ms: 300
   vad_max_segment_ms: 12000
@@ -67,12 +73,18 @@ schema:
   agent_max_output_tokens: int
   agent_history_turns: int
   agent_max_tool_rounds: int
+  agent_reasoning_effort: str
   agent_daily_limit_usd: float
   agent_monthly_limit_usd: float
   agent_request_reserve_usd: float
   agent_input_usd_per_million: float
   agent_cached_input_usd_per_million: float
   agent_output_usd_per_million: float
+  vision_model: str
+  vision_max_output_tokens: int
+  vision_input_usd_per_million: float
+  vision_cached_input_usd_per_million: float
+  vision_output_usd_per_million: float
   camera_entity: str
   home_map_entity: str
   camera_telemetry_entities: str

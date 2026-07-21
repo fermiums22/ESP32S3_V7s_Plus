@@ -26,6 +26,7 @@ from gopro_assist.agent import (
 )
 from gopro_assist.main import (
     BUILTIN_PROMPT_PATH,
+    LUNA_PROMPT_PATH,
     SOL_ADDENDUM_PATH,
     follow_wheel_targets,
     is_location_query,
@@ -45,12 +46,19 @@ CONFIG = AgentConfig(
     max_output_tokens=250,
     history_turns=6,
     max_tool_rounds=4,
+    reasoning_effort="none",
     daily_limit_usd=0.25,
     monthly_limit_usd=3.0,
     request_reserve_usd=0.01,
     input_usd_per_million=0.15,
     cached_input_usd_per_million=0.075,
     output_usd_per_million=0.60,
+    vision_model="gpt-5.6-luna",
+    vision_prompt="test vision",
+    vision_max_output_tokens=300,
+    vision_input_usd_per_million=1.0,
+    vision_cached_input_usd_per_million=0.1,
+    vision_output_usd_per_million=6.0,
     camera_entity="camera.robot_eyes",
     home_map_entity="",
     telemetry_entities=("sensor.v7s_plus_robot_state",),
@@ -72,6 +80,16 @@ class UsageLedgerTest(unittest.TestCase):
             self.assertEqual(today["cached_tokens"], 400)
             self.assertEqual(today["output_tokens"], 500)
             self.assertAlmostEqual(today["cost_usd"], 0.00042)
+            self.assertAlmostEqual(today["roles"]["dialogue"]["cost_usd"], 0.00042)
+
+    def test_vision_uses_separate_rates_and_bucket(self) -> None:
+        with TemporaryDirectory() as directory:
+            ledger = UsageLedger(Path(directory) / "usage.json")
+            ledger.add({"input_tokens": 1000, "output_tokens": 100}, CONFIG,
+                       rates=(1.0, 0.1, 6.0), role="vision")
+            today = ledger.data["today"]
+            self.assertAlmostEqual(today["cost_usd"], 0.0016)
+            self.assertAlmostEqual(today["roles"]["vision"]["cost_usd"], 0.0016)
 
     def test_reserve_blocks_request_before_limit(self) -> None:
         with TemporaryDirectory() as directory:
@@ -105,6 +123,7 @@ class LocalRobotControlTest(unittest.TestCase):
         )
         self.assertIn("only model allowed to speak as Sokol-9", sol)
         self.assertIn("deterministic limiter", luna)
+        self.assertIn("компактный JSON", LUNA_PROMPT_PATH.read_text(encoding="utf-8"))
 
     def test_builtin_persona_covers_household_roles(self) -> None:
         prompt = BUILTIN_PROMPT_PATH.read_text(encoding="utf-8")
