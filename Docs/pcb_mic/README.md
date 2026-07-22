@@ -6,14 +6,13 @@ microphones. Electrical interface and S3 pin assignment are documented in
 
 ## Review status
 
-The design is a work in progress and must not be fabricated until the input
-capacitor issue below is corrected and ERC/DRC are rerun.
+The design is ready for prototype fabrication after the usual ERC/DRC and
+Gerber review.
 
 - `TPS7A9001DSKR`, R1 = 4.7 kOhm and R2 = 1.5 kOhm produce approximately
   3.31 V; the feedback divider is correct.
-- C4 = 10 uF satisfies the LDO output-capacitance requirement.
-- Replace C3 = 100 nF with 10 uF, or add 10 uF in parallel directly at the
-  LDO IN pins. TPS7A90 requires 10 uF on its input.
+- C3 = 100 nF and C6 = 10 uF provide local input decoupling; C4 = 10 uF
+  satisfies the LDO output-capacitance requirement.
 - Populate the PDM DATA branch resistors with 22-33 Ohm instead of 0 Ohm if
   ringing is observed. Add a 22-33 Ohm series resistor to SCK near the source.
 - Verify both 0.6 mm bottom-port holes align with the microphone acoustic
