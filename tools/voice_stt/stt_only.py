@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / "stt_config.json"
 AUDIO_KEY_FILE = ROOT / "audio_secrets.txt"
 FALLBACK_KEY_FILE = ROOT / "secrets.txt"
+PROJECT_SECRETS_FILE = ROOT.parent.parent / "secrets.yaml"
 OUTPUT_DIR = ROOT / "transcripts"
 PREVIEW_DIR = ROOT / "preview_audio"
 USAGE_FILE = ROOT / "audio_usage.json"
@@ -72,14 +73,30 @@ def save_json(path: Path, value: dict) -> None:
 
 
 def load_key() -> str:
-    key_file = AUDIO_KEY_FILE if AUDIO_KEY_FILE.is_file() else FALLBACK_KEY_FILE
-    if not key_file.is_file():
+    key = ""
+    key_source = AUDIO_KEY_FILE.name
+    for key_file in (AUDIO_KEY_FILE, FALLBACK_KEY_FILE):
+        if key_file.is_file():
+            key = key_file.read_text(encoding="utf-8-sig").strip()
+            key_source = key_file.name
+            break
+    if not key and PROJECT_SECRETS_FILE.is_file():
+        for line in PROJECT_SECRETS_FILE.read_text(encoding="utf-8-sig").splitlines():
+            match = re.match(r"^\s*audio_gpt\s*:\s*(.*?)\s*$", line)
+            if not match:
+                continue
+            key = match.group(1)
+            if len(key) >= 2 and key[0] in "\"'" and key[-1] == key[0]:
+                key = key[1:-1]
+            key_source = f"{PROJECT_SECRETS_FILE.name}:audio_gpt"
+            break
+    if not key:
         raise RuntimeError(
-            f"Нет {AUDIO_KEY_FILE.name}. Положи туда ключ платного Audio API."
+            f"Нет ключа: добавь audio_gpt в {PROJECT_SECRETS_FILE.name} "
+            f"или создай {AUDIO_KEY_FILE.name}."
         )
-    key = key_file.read_text(encoding="utf-8-sig").strip()
     if not key.startswith(("sk-", "sk-proj-")):
-        raise RuntimeError(f"В {key_file.name} нет ключа OpenAI")
+        raise RuntimeError(f"В {key_source} нет ключа OpenAI")
     return key
 
 
