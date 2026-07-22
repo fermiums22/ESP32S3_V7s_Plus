@@ -40,6 +40,11 @@ USAGE_FILE = ROOT / "audio_usage.json"
 ACTIVE_SPEAKER_FILE = ROOT / "active_speaker.json"
 QUICK_REPLIES_FILE = ROOT / "quick_replies.json"
 QUICK_REPLY_CACHE = ROOT / "quick_reply_cache"
+QUICK_REPLY_AUDIO = ROOT / "quick_reply_audio"
+PRE_RECORDED_REPLIES = {
+    "Хм": QUICK_REPLY_AUDIO / "ack_hm.wav",
+    "Угу": QUICK_REPLY_AUDIO / "ack_ugu.wav",
+}
 SILERO_MODEL_FILE = ROOT / "vad_models" / "silero_vad_16k_op15.onnx"
 TRANSCRIPTIONS_URL = "https://api.openai.com/v1/audio/transcriptions"
 TARGET_RATE = 16_000
@@ -412,15 +417,14 @@ class QuickReplySpeaker:
             self.interrupt_requested.set()
 
     def _cache_path(self, text: str) -> Path:
+        prerecorded = PRE_RECORDED_REPLIES.get(text)
+        if prerecorded is not None and prerecorded.is_file():
+            return prerecorded
         key = f"{self.voice}|{self.speed}|{self.steps}|{text}".encode("utf-8")
         return QUICK_REPLY_CACHE / f"{hashlib.sha1(key).hexdigest()}.wav"
 
     def _run(self) -> None:
-        try:
-            from sokol9_supertonic_panel import ENGINE
-        except Exception as exc:
-            self.stats.write("quick_reply_tts_unavailable", error=str(exc))
-            return
+        engine = None
         while True:
             item = self.queue.get()
             if item is None:
@@ -429,8 +433,12 @@ class QuickReplySpeaker:
             try:
                 path = self._cache_path(text)
                 if not path.is_file():
+                    if engine is None:
+                        from sokol9_supertonic_panel import ENGINE
+
+                        engine = ENGINE
                     path.write_bytes(
-                        ENGINE.synthesize_one(
+                        engine.synthesize_one(
                             text,
                             voice=self.voice,
                             speed=self.speed,
@@ -1020,6 +1028,9 @@ class PhraseWorker:
                     self.owner_enrollment_deadline = 0.0
                     self.enrollment_name = None
                     self.enrollment_attempts = 0
+                    self.dialog_open_until = (
+                        time.monotonic() + self.dialog_open_seconds
+                    )
                     reply = f"Голос {enrollment_name} сохранён локально. Принято."
                     self.ui.log(f"Сокол: {reply}", new_phrase=True)
                     self._write_phrase("Сокол", reply)
@@ -1041,6 +1052,20 @@ class PhraseWorker:
                     )
                     continue
                 assert self.cloud is not None
+                dialog_was_open = time.monotonic() < self.dialog_open_until
+                speaker_match = SpeakerMatch("disabled", "Говорящий", 0.0, False)
+                if self.voice_profiles is not None:
+                    speaker_match = self.voice_profiles.identify(
+                        pcm, allow_owner_bootstrap=False
+                    )
+                acknowledgement_sent = False
+                if dialog_was_open:
+                    reply = self._next_acknowledgement()
+                    self.ui.log(
+                        f"Сокол → {speaker_match.name}: {reply}", new_phrase=True
+                    )
+                    self.speaker.speak(reply)
+                    acknowledgement_sent = True
                 try:
                     final_text, usage, summary = self.cloud.transcribe(pcm)
                 except Exception as cloud_error:
@@ -1077,11 +1102,10 @@ class PhraseWorker:
                 if not final_text:
                     self.stats.write("cloud_stt_empty", duration_seconds=round(duration, 3))
                     continue
-                dialog_open = time.monotonic() < self.dialog_open_until
                 addressed = contains_wake_word(final_text)
                 if addressed:
                     self.dialog_open_until = time.monotonic() + self.dialog_open_seconds
-                elif not dialog_open:
+                elif not dialog_was_open:
                     self.stats.write(
                         "ignored_outside_dialog",
                         text=final_text,
@@ -1091,14 +1115,12 @@ class PhraseWorker:
                 else:
                     self.dialog_open_until = time.monotonic() + self.dialog_open_seconds
 
-                speaker_match = SpeakerMatch("disabled", "Говорящий", 0.0, False)
-                if self.voice_profiles is not None:
-                    speaker_match = self.voice_profiles.identify(
-                        pcm, allow_owner_bootstrap=addressed
+                if addressed and not acknowledgement_sent:
+                    reply = self._next_acknowledgement()
+                    self.ui.log(
+                        f"Сокол → {speaker_match.name}: {reply}", new_phrase=True
                     )
-                reply = self._next_acknowledgement()
-                self.ui.log(f"Сокол → {speaker_match.name}: {reply}", new_phrase=True)
-                self.speaker.speak(reply)
+                    self.speaker.speak(reply)
                 self.ui.log(f"— {final_text}")
                 self._write_phrase(speaker_match.name, final_text)
                 self.stats.write(
