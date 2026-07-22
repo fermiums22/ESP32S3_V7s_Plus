@@ -11,6 +11,7 @@ speaker_models/*.onnx
 vad_models/*.onnx
 speaker_profiles/
 .venv/
+.venv-wsl-noavx/
 .build-onnxruntime-noavx/
 .tts_cache/
 __pycache__/
