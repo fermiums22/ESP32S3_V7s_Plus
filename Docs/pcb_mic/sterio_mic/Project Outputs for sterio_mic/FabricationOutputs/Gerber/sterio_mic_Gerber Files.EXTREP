@@ -1,5 +1,5 @@
 ------------------------------------------------------------------------------------------
-Gerber File Extension Report For: sterio_mic_Gerber Files.GBR   22.07.2026  14:32:00
+Gerber File Extension Report For: sterio_mic_Gerber Files.GBR   22.07.2026  19:10:18
 ------------------------------------------------------------------------------------------
 
 
@@ -15,4 +15,5 @@ Layer Extension     Layer Description
 .GBP                Bottom Paste                            
 .GBO                Bottom Overlay                          
 .GM1                Board Shape                             
+.GM2                Board                                   
 ------------------------------------------------------------------------------------------

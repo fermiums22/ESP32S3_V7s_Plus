@@ -29,6 +29,7 @@ Used DCodes :
     D39
     D40
     D41
+    D42
 *************************************************************
 
 *************************************************************
@@ -41,9 +42,9 @@ Generating : Bottom Layer
 
 
 Used DCodes :
-    D40
     D41
     D42
+    D43
 *************************************************************
 
 *************************************************************
@@ -81,40 +82,6 @@ Used DCodes :
 *************************************************************
 
 *************************************************************
-Generating : Bottom Paste
-      File : sterio_mic_Gerber Files.GBP
-
-    Adding Layer      : Bottom Paste
-
-    Adding Layer      : Bottom Layer
-
-    Adding Layer      : Multi-Layer
-
-
-Used DCodes :
-*************************************************************
-
-*************************************************************
-Generating : Bottom Overlay
-      File : sterio_mic_Gerber Files.GBO
-
-    Adding Layer      : Bottom Overlay
-
-
-Used DCodes :
-*************************************************************
-
-*************************************************************
-Generating : Board Shape
-      File : sterio_mic_Gerber Files.GM1
-
-    Adding Layer      : Board Shape
-
-
-Used DCodes :
-*************************************************************
-
-*************************************************************
 Generating : Top Solder
       File : sterio_mic_Gerber Files.GTS
 
@@ -140,6 +107,37 @@ Used DCodes :
 *************************************************************
 
 *************************************************************
+Generating : Bottom Overlay
+      File : sterio_mic_Gerber Files.GBO
+
+    Adding Layer      : Bottom Overlay
+
+
+Used DCodes :
+*************************************************************
+
+*************************************************************
+Generating : Board Shape
+      File : sterio_mic_Gerber Files.GM1
+
+    Adding Layer      : Board Shape
+
+
+Used DCodes :
+    D33
+*************************************************************
+
+*************************************************************
+Generating : Board
+      File : sterio_mic_Gerber Files.GM2
+
+    Adding Layer      : Board
+
+
+Used DCodes :
+*************************************************************
+
+*************************************************************
 Generating : Bottom Solder
       File : sterio_mic_Gerber Files.GBS
 
@@ -153,6 +151,20 @@ Generating : Bottom Solder
 Used DCodes :
     D29
     D30
-    D43
+    D44
+*************************************************************
+
+*************************************************************
+Generating : Bottom Paste
+      File : sterio_mic_Gerber Files.GBP
+
+    Adding Layer      : Bottom Paste
+
+    Adding Layer      : Bottom Layer
+
+    Adding Layer      : Multi-Layer
+
+
+Used DCodes :
 *************************************************************
 
