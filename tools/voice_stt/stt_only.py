@@ -18,7 +18,6 @@ import threading
 import time
 import wave
 
-from faster_whisper import WhisperModel
 import numpy as np
 import requests
 from rich.console import Console, Group
@@ -27,6 +26,7 @@ from rich.rule import Rule
 from rich.text import Text
 import sounddevice as sd
 from speaker_profiles import SpeakerMatch, SpeakerProfiles
+from silero_vad_onnx import FRAME_MS, FRAME_SAMPLES, SileroSegmenter
 
 
 ROOT = Path(__file__).resolve().parent
@@ -39,9 +39,9 @@ USAGE_FILE = ROOT / "audio_usage.json"
 ACTIVE_SPEAKER_FILE = ROOT / "active_speaker.json"
 QUICK_REPLIES_FILE = ROOT / "quick_replies.json"
 QUICK_REPLY_CACHE = ROOT / "quick_reply_cache"
+SILERO_MODEL_FILE = ROOT / "vad_models" / "silero_vad_16k_op15.onnx"
 TRANSCRIPTIONS_URL = "https://api.openai.com/v1/audio/transcriptions"
 TARGET_RATE = 16_000
-FRAME_MS = 30
 WAKE_WORD = "сокол"
 
 
@@ -126,6 +126,31 @@ def contains_wake_word(text: str) -> bool:
     return WAKE_WORD in re.findall(r"[а-яё]+", text.casefold())
 
 
+def emergency_local_command(text: str, dialog_open: bool) -> str | None:
+    """Return only a safe offline command; never pass arbitrary text onward."""
+    normalized = re.sub(
+        r"[^а-яa-z0-9]+", " ", text.casefold().replace("ё", "е")
+    ).strip()
+    addressed = bool(re.search(r"\bсокол\w*\b", normalized))
+    if addressed:
+        normalized = re.sub(r"\bсокол\w*\b", " ", normalized, count=1).strip()
+    elif not dialog_open:
+        return None
+    if normalized in {"стоп", "стой", "остановись", "аварийный стоп"}:
+        return "stop"
+    if normalized in {
+        "домой",
+        "на базу",
+        "едь домой",
+        "езжай домой",
+        "возвращайся на базу",
+    }:
+        return "home"
+    if normalized in {"следуй за мной", "едь за мной", "езжай за мной"}:
+        return "follow"
+    return None
+
+
 def cached_whisper_model(model_name: str) -> str:
     repository = f"models--Systran--faster-whisper-{model_name}"
     roots = (
@@ -157,7 +182,6 @@ class TerminalUI:
         self.api_model = str(config["api_model"])
         self.microphone = microphone
         self.local_only = local_only
-        self.calibration_seconds = float(config["calibration_seconds"])
         self.summary = (
             "ИТОГО UTC: API отключён"
             if local_only
@@ -165,7 +189,11 @@ class TerminalUI:
         )
         self.cost = "РАСХОД UTC: $0.000000"
         self.api_status = "API: готов |░░░░░░░░░░░░░░░░░░░░|"
-        self.calibration = "Калибровка: ожидаю тишину..."
+        self.calibration = (
+            "Silero VAD: "
+            f"старт {float(config.get('silero_threshold', 0.50)):.2f}, "
+            f"конец {float(config.get('silero_negative_threshold', 0.35)):.2f}"
+        )
         self.status = "○ ТИШИНА |░░░░░░░░░░░░░░░░░░░░|"
         self.log_lines: deque[str] = deque(
             maxlen=max(10, self.console.height - 12)
@@ -186,7 +214,8 @@ class TerminalUI:
         )
         header = "\n".join(
             (
-                f"Локальная модель: faster-whisper/{self.local_model} (CPU int8)",
+                "Детектор речи: Silero VAD ONNX (CPU, 1 поток)",
+                f"Аварийные команды: faster-whisper/{self.local_model} (ленивая загрузка)",
                 self.summary,
                 self.cost,
                 self.api_status,
@@ -194,7 +223,7 @@ class TerminalUI:
                 mode,
                 "Предварительный ответ: локально; облако только уточняет твою фразу.",
                 "— перед фразой означает платную обработку API.",
-                f"Первые {self.calibration_seconds:.1f} с соблюдай тишину. Enter — остановить.",
+                "Можно говорить сразу. Enter — остановить.",
                 self.calibration,
                 self.status,
             )
@@ -554,6 +583,8 @@ class UsageLog:
 
 class LocalGate:
     def __init__(self, model_name: str) -> None:
+        from faster_whisper import WhisperModel
+
         self.model = WhisperModel(
             cached_whisper_model(model_name), device="cpu", compute_type="int8"
         )
@@ -830,7 +861,7 @@ class PhraseWorker:
         )
         if self.cloud is not None:
             self.ui.set_summary(self.cloud.usage_log.today_summary())
-        self.local = LocalGate(str(config["local_model"]))
+        self.local: LocalGate | None = None
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -898,9 +929,16 @@ class PhraseWorker:
         )
         return True
 
+    def _transcribe_emergency(self, pcm: np.ndarray) -> tuple[str, float]:
+        if self.local is None:
+            self.stats.write("emergency_whisper_loading")
+            self.local = LocalGate(str(self.config["local_model"]))
+        text, no_speech, _language, _probability = self.local.transcribe(
+            pcm, str(self.config["language"])
+        )
+        return text, no_speech
+
     def _run(self) -> None:
-        language = str(self.config["language"])
-        no_speech_limit = float(self.config["local_no_speech_max"])
         while True:
             item = self.queue.get()
             if item is None:
@@ -908,41 +946,12 @@ class PhraseWorker:
             pcm, playback_overlap, barge_in = item
             duration = len(pcm) / TARGET_RATE
             try:
-                draft, no_speech, local_language, language_probability = (
-                    self.local.transcribe(pcm, language)
-                )
-                if (
-                    local_language == "ja"
-                    and language_probability
-                    >= float(self.config.get("ignore_japanese_probability", 0.45))
-                ):
-                    self.stats.write(
-                        "ignored_japanese_device",
-                        duration_seconds=round(duration, 3),
-                        local_text=draft,
-                        language_probability=round(language_probability, 5),
-                    )
-                    continue
-                if not draft or no_speech > no_speech_limit:
-                    self.stats.write(
-                        "rejected_noise",
-                        duration_seconds=round(duration, 3),
-                        local_text=draft,
-                        local_no_speech=no_speech,
-                    )
-                    continue
-                enrollment_overlapped_reply = (
-                    self.awaiting_owner_enrollment
-                    and "произнес" not in draft.casefold().replace("ё", "е")
-                )
-                if playback_overlap and not barge_in and not enrollment_overlapped_reply:
+                if playback_overlap and not barge_in and not self.awaiting_owner_enrollment:
                     self.stats.write(
                         "ignored_playback_echo",
                         duration_seconds=round(duration, 3),
-                        local_text=draft,
                     )
                     continue
-                dialog_open = time.monotonic() < self.dialog_open_until
                 if (
                     self.voice_profiles is not None
                     and self.awaiting_owner_enrollment
@@ -1003,44 +1012,6 @@ class PhraseWorker:
                         duration_seconds=round(duration, 3),
                     )
                     continue
-                speaker_match = SpeakerMatch("disabled", "Говорящий", 0.0, False)
-                voice_changed = False
-                change_similarity = 1.0
-                addressed = contains_wake_word(draft)
-                if self.voice_profiles is not None:
-                    if self.diarizer is not None:
-                        voice_changed, change_similarity = self.voice_profiles.detect_change(pcm)
-                    speaker_match = self.voice_profiles.identify(
-                        pcm, allow_owner_bootstrap=addressed
-                    )
-                    if speaker_match.is_new:
-                        self.last_runtime_profile_id = speaker_match.profile_id
-                    self.stats.write(
-                        "speaker_match",
-                        profile_id=speaker_match.profile_id,
-                        speaker=speaker_match.name,
-                        similarity=round(speaker_match.similarity, 5),
-                        is_new=speaker_match.is_new,
-                        voice_changed=voice_changed,
-                        change_similarity=round(change_similarity, 5),
-                    )
-                if addressed:
-                    self.dialog_open_until = time.monotonic() + self.dialog_open_seconds
-                elif not dialog_open:
-                    self.stats.write(
-                        "ignored_outside_dialog",
-                        local_text=draft,
-                        speaker=speaker_match.name,
-                    )
-                    continue
-                else:
-                    self.dialog_open_until = time.monotonic() + self.dialog_open_seconds
-                reply = self._next_acknowledgement()
-                self.ui.log(
-                    f"Сокол → {speaker_match.name}: {reply}", new_phrase=True
-                )
-                self._write_phrase("Сокол", reply)
-                self.speaker.speak(reply)
                 if self.local_only:
                     PREVIEW_DIR.mkdir(exist_ok=True)
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -1049,127 +1020,76 @@ class PhraseWorker:
                     self.stats.write(
                         "local_preview",
                         duration_seconds=round(duration, 3),
-                        local_text=draft,
                         audio_file=str(preview_path),
                     )
                     continue
-                if (
-                    self.diarizer is not None
-                    and self.voice_profiles is not None
-                    and voice_changed
-                ):
-                    references = self.voice_profiles.known_references(limit=3)
-                    if references:
-                        try:
-                            segments, diarize_usage = self.diarizer.transcribe(
-                                pcm, references
-                            )
-                        except Exception as exc:
-                            self.stats.write("diarize_error", error=str(exc))
-                        else:
-                            summary = self.usage_log.add(
-                                self.diarizer.model,
-                                duration,
-                                diarize_usage,
-                                float(
-                                    self.config.get(
-                                        "diarize_price_per_million_input_tokens_usd",
-                                        2.5,
-                                    )
-                                ),
-                                float(
-                                    self.config.get(
-                                        "diarize_price_per_million_output_tokens_usd",
-                                        10.0,
-                                    )
-                                ),
-                            )
-                            self.ui.set_summary(summary)
-                            known_names = {name.casefold(): name for name, _ in references}
-                            rendered: list[dict] = []
-                            for segment in segments:
-                                text = str(segment.get("text", "")).strip()
-                                if not text:
-                                    continue
-                                api_speaker = str(segment.get("speaker", "")).strip()
-                                speaker_name = known_names.get(api_speaker.casefold())
-                                if speaker_name is None:
-                                    speaker_name = (
-                                        speaker_match.name
-                                        if len(segments) == 1
-                                        else f"Кожаный мешок {api_speaker or '?'}"
-                                    )
-                                if not text.endswith((".", "!", "?")):
-                                    text += "."
-                                self.ui.log(f"— {text}")
-                                self._write_phrase(speaker_name, text)
-                                rendered.append(
-                                    {
-                                        "speaker": speaker_name,
-                                        "text": text,
-                                        "start": segment.get("start"),
-                                        "end": segment.get("end"),
-                                    }
-                                )
-                            if rendered:
-                                active = self.voice_profiles.metadata_by_name(
-                                    str(rendered[-1]["speaker"])
-                                )
-                                active.update(
-                                    {
-                                        "updated_at": utc_now(),
-                                        "owner_override": active["role"] == "owner",
-                                    }
-                                )
-                                save_json(ACTIVE_SPEAKER_FILE, active)
-                                self.stats.write(
-                                    "diarized_speech",
-                                    duration_seconds=round(duration, 3),
-                                    segments=rendered,
-                                    usage=diarize_usage,
-                                    known_speakers=[name for name, _ in references],
-                                    owner_override=active["role"] == "owner",
-                                )
-                                continue
                 assert self.cloud is not None
-                final_text, usage, summary = self.cloud.transcribe(pcm)
+                try:
+                    final_text, usage, summary = self.cloud.transcribe(pcm)
+                except Exception as cloud_error:
+                    self.stats.write(
+                        "cloud_stt_unavailable",
+                        duration_seconds=round(duration, 3),
+                        error=str(cloud_error),
+                    )
+                    draft, no_speech = self._transcribe_emergency(pcm)
+                    command = emergency_local_command(
+                        draft, time.monotonic() < self.dialog_open_until
+                    )
+                    if (
+                        not draft
+                        or no_speech > float(self.config["local_no_speech_max"])
+                        or command is None
+                    ):
+                        self.ui.log(
+                            "Сокол: облако недоступно; аварийная команда не распознана.",
+                            new_phrase=True,
+                        )
+                        continue
+                    self.ui.log(f"АВАРИЙНАЯ КОМАНДА [{command}]: {draft}", new_phrase=True)
+                    self.stats.write(
+                        "emergency_command",
+                        command=command,
+                        local_text=draft,
+                        duration_seconds=round(duration, 3),
+                    )
+                    continue
                 if final_text and not final_text.endswith((".", "!", "?")):
                     final_text += "."
                 self.ui.set_summary(summary)
-                if final_text:
-                    speaker_name = speaker_match.name
-                    self.ui.log(f"— {final_text}")
-                    self._write_phrase(speaker_name, final_text)
-                    metadata = (
-                        self.voice_profiles.metadata(speaker_match.profile_id)
-                        if self.voice_profiles is not None
-                        else {
-                            "profile_id": speaker_match.profile_id,
-                            "name": speaker_name,
-                            "role": "unknown",
-                            "priority": 0,
-                        }
+                if not final_text:
+                    self.stats.write("cloud_stt_empty", duration_seconds=round(duration, 3))
+                    continue
+                dialog_open = time.monotonic() < self.dialog_open_until
+                addressed = contains_wake_word(final_text)
+                if addressed:
+                    self.dialog_open_until = time.monotonic() + self.dialog_open_seconds
+                elif not dialog_open:
+                    self.stats.write(
+                        "ignored_outside_dialog",
+                        text=final_text,
+                        duration_seconds=round(duration, 3),
                     )
-                    metadata.update(
-                        {
-                            "updated_at": utc_now(),
-                            "owner_override": metadata["role"] == "owner",
-                        }
-                    )
-                    save_json(ACTIVE_SPEAKER_FILE, metadata)
+                    continue
                 else:
-                    retry_reply = "Не разобрал. Повтори, пожалуйста."
-                    self.ui.log(f"Сокол: {retry_reply}")
-                    self._write_phrase("Сокол", retry_reply)
-                    self.speaker.speak(retry_reply)
+                    self.dialog_open_until = time.monotonic() + self.dialog_open_seconds
+
+                speaker_match = SpeakerMatch("disabled", "Говорящий", 0.0, False)
+                if self.voice_profiles is not None:
+                    speaker_match = self.voice_profiles.identify(
+                        pcm, allow_owner_bootstrap=addressed
+                    )
+                reply = self._next_acknowledgement()
+                self.ui.log(f"Сокол → {speaker_match.name}: {reply}", new_phrase=True)
+                self.speaker.speak(reply)
+                self.ui.log(f"— {final_text}")
+                self._write_phrase(speaker_match.name, final_text)
                 self.stats.write(
                     "speech_transcript",
                     duration_seconds=round(duration, 3),
-                    local_text=draft,
                     text=final_text,
                     speaker=speaker_match.name,
                     profile_id=speaker_match.profile_id,
-                    voice_changed=voice_changed,
                     usage=usage,
                 )
             except Exception as exc:
@@ -1237,36 +1157,15 @@ def main() -> int:
             stop.set()
 
         threading.Thread(target=wait_for_enter, daemon=True).start()
-        pre_roll_count = max(1, round(float(config["pre_roll_ms"]) / FRAME_MS))
-        silence_limit = max(1, round(float(config["end_silence_ms"]) / FRAME_MS))
-        min_speech_blocks = max(1, round(float(config["min_speech_ms"]) / FRAME_MS))
-        max_phrase_blocks = max(
-            1, round(float(config["max_phrase_seconds"]) * 1000 / FRAME_MS)
-        )
-        calibration_blocks = max(
-            1, round(float(config["calibration_seconds"]) * 1000 / FRAME_MS)
-        )
-        rms_min = float(config.get("rms_min", 120.0))
-        rms_multiplier = float(config.get("rms_start_multiplier", 1.35))
-        rms_percentile = float(config.get("rms_calibration_percentile", 60.0))
-        rms_start_max = float(config.get("rms_start_max", 480.0))
+        vad = SileroSegmenter(SILERO_MODEL_FILE, config)
         barge_in_rms_min = float(config.get("barge_in_rms_min", 500.0))
-        barge_in_rms_multiplier = float(
-            config.get("barge_in_rms_multiplier", 2.5)
-        )
         barge_in_frames = max(1, int(config.get("barge_in_frames", 3)))
+        playback_barge_in_enabled = bool(
+            config.get("playback_barge_in_enabled", False)
+        )
         barge_in_votes = 0
-        pre_roll: deque[tuple[np.ndarray, bool]] = deque(maxlen=pre_roll_count)
-        start_votes: deque[bool] = deque(maxlen=5)
-        phrase: list[np.ndarray] = []
-        phrase_has_playback = False
-        phrase_barged_in = False
         pending_barge_in = False
-        speaking = False
-        silence_blocks = 0
-        voiced_blocks = 0
         meter_tick = 0
-        calibration_rms: list[float] = []
 
         with sd.InputStream(
             samplerate=source_rate,
@@ -1283,100 +1182,55 @@ def main() -> int:
                     continue
                 playback_overlap = playback_active.is_set()
                 block = resample_mono(source_block, source_rate)
+                if block.size < FRAME_SAMPLES:
+                    block = np.pad(block, (0, FRAME_SAMPLES - block.size))
+                elif block.size > FRAME_SAMPLES:
+                    block = block[:FRAME_SAMPLES]
+                block = block.astype("<i2", copy=False)
                 rms = float(np.sqrt(np.mean(block.astype(np.float64) ** 2)))
-                if len(calibration_rms) < calibration_blocks:
-                    calibration_rms.append(rms)
-                    pre_roll.append((block, playback_overlap))
-                    if len(calibration_rms) == calibration_blocks:
-                        noise_floor = float(np.percentile(calibration_rms, rms_percentile))
-                        start_rms = max(
-                            rms_min,
-                            min(noise_floor * rms_multiplier, rms_start_max),
-                        )
-                        ui.set_calibration(noise_floor, start_rms)
-                    continue
 
-                if playback_overlap:
-                    barge_threshold = max(
-                        barge_in_rms_min, start_rms * barge_in_rms_multiplier
-                    )
-                    if rms >= barge_threshold:
+                if playback_overlap and playback_barge_in_enabled:
+                    if rms >= barge_in_rms_min:
                         barge_in_votes += 1
                         if barge_in_votes >= barge_in_frames:
                             speaker.interrupt()
-                            if speaking:
-                                phrase_barged_in = True
-                            else:
-                                pending_barge_in = True
+                            pending_barge_in = True
                             barge_in_votes = 0
                     else:
                         barge_in_votes = 0
                 else:
                     barge_in_votes = 0
-                    if not speaking:
+                    if not vad.speaking:
                         pending_barge_in = False
 
-                loud_voice = rms >= start_rms
-                if not speaking:
-                    pre_roll.append((block, playback_overlap))
-                    if not loud_voice:
-                        noise_floor += (rms - noise_floor) * 0.01
-                        start_rms = max(
-                            rms_min,
-                            min(noise_floor * rms_multiplier, rms_start_max),
-                        )
-                    start_votes.append(loud_voice)
-                    if sum(start_votes) >= 3:
-                        speaking = True
-                        phrase = [item[0] for item in pre_roll]
-                        phrase_has_playback = playback_overlap
-                        phrase_barged_in = pending_barge_in
-                        pending_barge_in = False
-                        pre_roll.clear()
-                        silence_blocks = 0
-                        voiced_blocks = sum(start_votes)
-                        meter_tick = 0
-                        ui.set_status(True, rms, start_rms)
-                    continue
-
-                phrase.append(block)
-                phrase_has_playback = phrase_has_playback or playback_overlap
+                result, speech_probability = vad.feed(
+                    block,
+                    playback_overlap,
+                    pending_barge_in,
+                )
+                if vad.speaking:
+                    pending_barge_in = False
                 meter_tick += 1
                 if meter_tick % 3 == 0:
-                    ui.set_status(True, rms, start_rms)
-                if loud_voice:
-                    voiced_blocks += 1
-                    silence_blocks = max(0, silence_blocks - 2)
-                else:
-                    silence_blocks += 1
-                complete = silence_blocks >= silence_limit or len(phrase) >= max_phrase_blocks
-                if not complete:
-                    continue
-
-                trim_blocks = max(0, silence_blocks - 7)
-                if trim_blocks:
-                    phrase = phrase[:-trim_blocks]
-                phrase_seconds = len(phrase) * FRAME_MS / 1000
-                ui.set_status(False)
-                if voiced_blocks >= min_speech_blocks:
-                    pcm = high_pass(np.concatenate(phrase))
-                    worker.submit(pcm, phrase_has_playback, phrase_barged_in)
-                else:
-                    stats.write(
-                        "too_short",
-                        duration_seconds=round(phrase_seconds, 3),
+                    ui.set_status(
+                        vad.speaking,
+                        speech_probability,
+                        float(config.get("silero_threshold", 0.50)),
                     )
-                phrase = []
-                phrase_has_playback = False
-                phrase_barged_in = False
-                speaking = False
-                silence_blocks = 0
-                voiced_blocks = 0
-                start_votes.clear()
+                if result is not None:
+                    pcm, phrase_has_playback, phrase_barged_in = result
+                    worker.submit(
+                        high_pass(pcm),
+                        phrase_has_playback,
+                        phrase_barged_in,
+                    )
+                    ui.set_status(False)
 
-        if speaking and voiced_blocks >= min_speech_blocks and phrase:
+        result = vad.flush()
+        if result is not None:
+            pcm, phrase_has_playback, phrase_barged_in = result
             worker.submit(
-                high_pass(np.concatenate(phrase)),
+                high_pass(pcm),
                 phrase_has_playback,
                 phrase_barged_in,
             )

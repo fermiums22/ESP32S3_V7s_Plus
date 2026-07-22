@@ -101,7 +101,7 @@ void PcmI2sTx::loop() {
 }
 
 void PcmI2sTx::dump_config() {
-  ESP_LOGCONFIG(TAG, "PCM I2S slave TX:");
+  ESP_LOGCONFIG(TAG, "PCM I2S master TX (direct amplifier):");
   ESP_LOGCONFIG(TAG, "  Input: ESPHome HTTP audio pipeline");
   ESP_LOGCONFIG(TAG, "  Local track: /audio/Balensiaga.mp3 (SPIFFS)");
   ESP_LOGCONFIG(TAG, "  I2S output: S16LE stereo 44100 Hz");
@@ -166,7 +166,8 @@ bool PcmI2sTx::has_buffered_data() const {
 void PcmI2sTx::i2s_task_(void *arg) {
   auto *self = static_cast<PcmI2sTx *>(arg);
   i2s_chan_handle_t tx = nullptr;
-  i2s_chan_config_t channel_config = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_SLAVE);
+  // I2S0 is reserved for the hardware PDM-to-PCM microphone converter.
+  i2s_chan_config_t channel_config = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
   channel_config.dma_desc_num = 6;
   channel_config.dma_frame_num = 240;
   esp_err_t err = i2s_new_channel(&channel_config, &tx, nullptr);
@@ -193,7 +194,7 @@ void PcmI2sTx::i2s_task_(void *arg) {
     vTaskDelete(nullptr);
     return;
   }
-  ESP_LOGI(TAG, "I2S slave TX ready");
+  ESP_LOGI(TAG, "I2S1 master TX ready");
 
   alignas(4) uint8_t block[1024]{};
   size_t test_audio_pos = self->test_audio_size_;

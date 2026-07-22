@@ -12,6 +12,8 @@ if errorlevel 1 goto :error
 if errorlevel 1 goto :error
 ".venv\Scripts\python.exe" install_speaker_model.py
 if errorlevel 1 goto :error
+".venv\Scripts\python.exe" install_silero_vad.py
+if errorlevel 1 goto :error
 
 echo.
 echo Установка завершена. Создай audio_secrets.txt и запусти start_voice_stt.bat

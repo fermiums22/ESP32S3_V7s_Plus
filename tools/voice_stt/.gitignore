@@ -8,6 +8,7 @@ transcripts/
 preview_audio/
 quick_reply_cache/
 speaker_models/*.onnx
+vad_models/*.onnx
 speaker_profiles/
 .venv/
 .tts_cache/
