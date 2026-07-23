@@ -35,25 +35,28 @@ Initial firmware target is stereo PCM16 at 16 kHz on I2S0 PDM RX. A 2.048 MHz
 PDM clock keeps the T3902 in standard mode. GPIO10 and GPIO11 are currently
 unused by the robot firmware and are not ESP32-S3 boot strapping pins.
 
-## Future MAX98357-family I2S amplifier
+## Current PCM5102A + PAM8403 playback path
 
-Keep the existing audio pins:
+The selected stereo playback hardware and its filters, jumpers, attenuation,
+power distribution, and speaker wiring are documented in
+[audio/PCM5102A_PAM8403_WIRING.md](audio/PCM5102A_PAM8403_WIRING.md).
 
-| Signal | ESP32-S3 | MAX amplifier |
+It keeps the reserved audio pins:
+
+| Signal | ESP32-S3 | PCM5102A |
 |---|---:|---|
 | I2S BCLK | GPIO5 | `BCLK` |
-| I2S LRCLK / WS | GPIO6 | `LRC` / `WS` |
+| I2S LRCLK / WS | GPIO6 | `LCK` / `LRCK` |
 | I2S data out | GPIO7 | `DIN` |
-| Optional shutdown | GPIO4 | `SD` / `EN` |
 | Ground | GND | `GND` |
 
-The amplifier uses I2S1 in master TX mode. I2S0 is reserved for the T3902
-PDM-to-PCM hardware converter. The old slave connection to the ESP32-WROOM is
-removed and GPIO5/GPIO6/GPIO7 must no longer be wired to that controller.
+PCM5102A feeds the analog inputs of the PAM8403 stereo class-D amplifier. The
+playback path uses I2S1 in master TX mode. I2S0 remains reserved for the T3902
+PDM-to-PCM hardware converter. The old slave connection to ESP32-WROOM stays
+removed.
 
 Do not connect a bare speaker directly to the S3. Speaker power and wiring
-depend on the exact MAX module; confirm its part number before connecting VIN,
-gain, SD, and the speaker.
+are described in the module-specific document above.
 
 ## Echo cancellation and interruption
 
