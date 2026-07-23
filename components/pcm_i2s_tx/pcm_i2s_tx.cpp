@@ -2,6 +2,7 @@
 
 #include "esphome/core/log.h"
 
+#include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "esp_heap_caps.h"
 #include "esp_spiffs.h"
@@ -12,8 +13,25 @@
 namespace esphome::pcm_i2s_tx {
 
 static const char *const TAG = "pcm_i2s_tx";
+static constexpr gpio_num_t DAC_XSMT_PIN = GPIO_NUM_4;
+static constexpr gpio_num_t I2S_BCLK_PIN = GPIO_NUM_5;
+static constexpr gpio_num_t I2S_WS_PIN = GPIO_NUM_6;
+static constexpr gpio_num_t I2S_DATA_PIN = GPIO_NUM_7;
 
 void PcmI2sTx::setup() {
+  const gpio_config_t mute_config = {
+      .pin_bit_mask = 1ULL << DAC_XSMT_PIN,
+      .mode = GPIO_MODE_OUTPUT,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_ENABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  if (gpio_config(&mute_config) != ESP_OK || gpio_set_level(DAC_XSMT_PIN, 0) != ESP_OK) {
+    ESP_LOGE(TAG, "Cannot configure PCM5102A XSMT on GPIO4");
+    this->mark_failed();
+    return;
+  }
+
   const esp_vfs_spiffs_conf_t fs_config = {
       .base_path = "/audio",
       .partition_label = "audio",
@@ -101,11 +119,11 @@ void PcmI2sTx::loop() {
 }
 
 void PcmI2sTx::dump_config() {
-  ESP_LOGCONFIG(TAG, "PCM I2S master TX (direct amplifier):");
+  ESP_LOGCONFIG(TAG, "PCM I2S master TX (PCM5102A DAC):");
   ESP_LOGCONFIG(TAG, "  Input: ESPHome HTTP audio pipeline");
   ESP_LOGCONFIG(TAG, "  Local track: /audio/Balensiaga.mp3 (SPIFFS)");
   ESP_LOGCONFIG(TAG, "  I2S output: S16LE stereo 44100 Hz");
-  ESP_LOGCONFIG(TAG, "  BCLK: GPIO5, WS: GPIO6, DATA: GPIO7");
+  ESP_LOGCONFIG(TAG, "  XSMT: GPIO4, BCLK: GPIO5, WS: GPIO6, DATA: GPIO7");
   ESP_LOGCONFIG(TAG, "  PSRAM buffer: %u bytes", static_cast<unsigned>(BUFFER_SIZE));
 }
 
@@ -176,9 +194,9 @@ void PcmI2sTx::i2s_task_(void *arg) {
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
       .gpio_cfg = {
           .mclk = I2S_GPIO_UNUSED,
-          .bclk = GPIO_NUM_5,
-          .ws = GPIO_NUM_6,
-          .dout = GPIO_NUM_7,
+          .bclk = I2S_BCLK_PIN,
+          .ws = I2S_WS_PIN,
+          .dout = I2S_DATA_PIN,
           .din = I2S_GPIO_UNUSED,
           .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
       },
@@ -199,6 +217,7 @@ void PcmI2sTx::i2s_task_(void *arg) {
   alignas(4) uint8_t block[1024]{};
   size_t test_audio_pos = self->test_audio_size_;
   uint32_t seen_test_request = 0;
+  bool dac_unmuted = false;
   while (true) {
     uint32_t count = 0;
     if (self->streaming_.load(std::memory_order_acquire)) {
@@ -240,6 +259,11 @@ void PcmI2sTx::i2s_task_(void *arg) {
     }
     if (count < sizeof(block))
       memset(block + count, 0, sizeof(block) - count);
+    const bool should_unmute = self->streaming_.load(std::memory_order_acquire) || count != 0;
+    if (should_unmute != dac_unmuted) {
+      gpio_set_level(DAC_XSMT_PIN, should_unmute ? 1 : 0);
+      dac_unmuted = should_unmute;
+    }
     uint32_t nonzero = 0;
     for (size_t i = 0; i < sizeof(block); i++)
       nonzero += block[i] != 0;

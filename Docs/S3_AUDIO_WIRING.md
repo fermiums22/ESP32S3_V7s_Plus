@@ -37,14 +37,15 @@ unused by the robot firmware and are not ESP32-S3 boot strapping pins.
 
 ## Current PCM5102A + PAM8403 playback path
 
-The selected stereo playback hardware and its filters, jumpers, attenuation,
-power distribution, and speaker wiring are documented in
+The selected stereo playback hardware, jumpers, power distribution, and speaker
+wiring are documented in
 [audio/PCM5102A_PAM8403_WIRING.md](audio/PCM5102A_PAM8403_WIRING.md).
 
 It keeps the reserved audio pins:
 
 | Signal | ESP32-S3 | PCM5102A |
 |---|---:|---|
+| DAC soft mute | GPIO4 | `XSMT` |
 | I2S BCLK | GPIO5 | `BCLK` |
 | I2S LRCLK / WS | GPIO6 | `LCK` / `LRCK` |
 | I2S data out | GPIO7 | `DIN` |
