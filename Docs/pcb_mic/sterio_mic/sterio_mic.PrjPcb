@@ -176,38 +176,42 @@ DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic
 DItemRevisionGUID=
 
 [GeneratedDocument7]
-DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.GTL
+DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.GM2
 DItemRevisionGUID=
 
 [GeneratedDocument8]
-DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.GTO
+DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.GTL
 DItemRevisionGUID=
 
 [GeneratedDocument9]
-DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.GTP
+DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.GTO
 DItemRevisionGUID=
 
 [GeneratedDocument10]
-DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.GTS
+DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.GTP
 DItemRevisionGUID=
 
 [GeneratedDocument11]
-DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.REP
+DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.GTS
 DItemRevisionGUID=
 
 [GeneratedDocument12]
-DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.RUL
+DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.REP
 DItemRevisionGUID=
 
 [GeneratedDocument13]
-DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\NC Drill\sterio_mic_NC Drill Files.DRR
+DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\Gerber\sterio_mic_Gerber Files.RUL
 DItemRevisionGUID=
 
 [GeneratedDocument14]
-DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\NC Drill\sterio_mic_NC Drill Files.LDP
+DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\NC Drill\sterio_mic_NC Drill Files.DRR
 DItemRevisionGUID=
 
 [GeneratedDocument15]
+DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\NC Drill\sterio_mic_NC Drill Files.LDP
+DItemRevisionGUID=
+
+[GeneratedDocument16]
 DocumentPath=Project Outputs for sterio_mic\FabricationOutputs\NC Drill\sterio_mic_NC Drill Files.TXT
 DItemRevisionGUID=
 
