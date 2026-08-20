@@ -1,0 +1,31 @@
+esphome:
+  name: bm2-pdm-raw
+  friendly_name: BM2 Raw PDM Probe
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  toolchain: esp-idf
+  framework:
+    type: esp-idf
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+
+switch:
+  - platform: gpio
+    id: microphone_power_enable
+    internal: true
+    pin:
+      number: GPIO12
+      mode:
+        output: true
+      inverted: false
+    restore_mode: ALWAYS_ON
+
+raw_pdm_probe:

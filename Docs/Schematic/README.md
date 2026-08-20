@@ -16,6 +16,11 @@ SHA-256:
 The photographed PCB may be a clone or a different board revision. Verify
 power jumpers and rail voltages before powering external hardware.
 
+In the V1.4 schematic the header `5V` pin is separated from the board's USB
+5 V rail by `D3`. The `IN-OUT` solder jumper bypasses `D3`; close this jumper
+only with USB power removed when the header must supply 5 V to external
+hardware. Keep the neighboring `RGB` and `USB-OTG` jumpers unchanged.
+
 ## Intended AI-S3 board
 
 `AI-S3_ESP32-S3_Dev_Board_Schematic.pdf` is a third-party schematic matching
