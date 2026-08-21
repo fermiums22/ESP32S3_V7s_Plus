@@ -1,0 +1,56 @@
+esphome:
+  name: mic-level-test
+  friendly_name: Microphone Level Test
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  toolchain: esp-idf
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+
+switch:
+  - platform: gpio
+    id: microphone_power_enable
+    internal: true
+    pin:
+      number: GPIO12
+      mode:
+        output: true
+      inverted: false
+    restore_mode: ALWAYS_ON
+
+i2s_audio:
+  - id: pdm_microphone_bus
+    i2s_lrclk_pin: GPIO10
+
+microphone:
+  - platform: i2s_audio
+    id: robot_pdm_microphones
+    i2s_audio_id: pdm_microphone_bus
+    adc_type: external
+    i2s_din_pin: GPIO11
+    pdm: true
+    channel: stereo
+    sample_rate: 16000
+    bits_per_sample: 16bit
+    correct_dc_offset: false
+
+mic_level_meter:
+  microphone: robot_pdm_microphones
+  update_interval: 100ms
+
+mic_wav_recorder:
+  microphone: robot_pdm_microphones

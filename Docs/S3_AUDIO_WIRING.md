@@ -74,8 +74,9 @@ ESP32-S3 boot strapping pins.
 The ESPHome firmware continuously publishes a two-channel level marker over
 its native USB Serial/JTAG port. After flashing `v7s-plus.yaml`, leave the ESP
 connected by USB and run `mic_level.bat` from the repository root. The console
-tool automatically finds an Espressif USB port and shows separate `PDM R/BM1`
-and `PDM L/BM2` RMS bars using the experimentally verified physical mapping.
+tool automatically finds an Espressif USB port and shows physical
+`LEFT/BM1` and `RIGHT/BM2` RMS bars. Internally BM1 arrives in PDM slot R and
+BM2 arrives in PDM slot L; the utility reorders them for an intuitive display.
 Stop it with `Ctrl+C`.
 
 If automatic port selection is ambiguous, pass the port explicitly:

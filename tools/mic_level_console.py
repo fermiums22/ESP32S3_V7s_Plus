@@ -69,13 +69,13 @@ def draw(port: str, values: tuple[int, int, int, int, int] | None, status: str) 
         "",
     ]
     if values is None:
-        lines.extend(["PDM L/BM2 [ожидание данных]", "PDM R/BM1 [ожидание данных]"])
+        lines.extend(["LEFT/BM1 [ожидание данных]", "RIGHT/BM2 [ожидание данных]"])
     else:
         left, right, left_peak, right_peak, count = values
         lines.extend(
             [
-                channel_line("PDM L/BM2", left, left_peak),
-                channel_line("PDM R/BM1", right, right_peak),
+                channel_line("LEFT/BM1", right, right_peak),
+                channel_line("RIGHT/BM2", left, left_peak),
                 f"Отсчётов за окно: {count}",
             ]
         )
@@ -151,7 +151,7 @@ def run(port: str, baud: int, duration: float | None) -> int:
                 # signal from the ESP's right slot. The fitted microphones'
                 # slot polarity is therefore opposite to the stale T3902
                 # library metadata used by the schematic symbol.
-                weak_channel = "PDM L / BM2" if raw_values[0] < raw_values[1] else "PDM R / BM1"
+                weak_channel = "RIGHT / BM2" if raw_values[0] < raw_values[1] else "LEFT / BM1"
                 status = (
                     f"ВНИМАНИЕ: {weak_channel} почти без сигнала; "
                     "проверьте питание, землю и DATA этой ветви."
