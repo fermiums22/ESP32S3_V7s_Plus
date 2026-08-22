@@ -1,6 +1,6 @@
 name: "GoPro Assist Bridge"
-description: "Voice gateway from the robot GoPro microphone to Home Assistant Assist"
-version: "0.10.0"
+description: "Sokol voice gateway from the robot microphone to Home Assistant Assist"
+version: "0.11.1"
 slug: "gopro_assist_bridge"
 init: false
 startup: application
@@ -8,9 +8,13 @@ boot: auto
 arch:
   - amd64
 homeassistant_api: true
-host_network: true
+host_network: false
+ports:
+  10300/tcp: 10300
+ports_description:
+  10300/tcp: "Raw 16 kHz PCM microphone stream from ESP32"
 options:
-  rtsp_url: "rtsp://192.168.0.4:8554/gopro_robot"
+  rtsp_url: "tcp://0.0.0.0:10300"
   pipeline_id: "01kxvnjgzn01ztjz62rvdyydf8"
   pipeline_name: "GPT"
   stt_engine: "stt.whisper_cpp"
@@ -20,7 +24,7 @@ options:
   media_player: "media_player.v7s_plus_wifi_audio"
   language: "ru_RU"
   agent_enabled: true
-  stt_only_mode: false
+  stt_only_mode: true
   quick_acknowledgements: "Хм.,Угу.,М-м."
   openai_api_key: ""
   cloud_stt_enabled: true

@@ -1,4 +1,4 @@
-"""GoPro RTSP microphone to Home Assistant Assist bridge.
+"""Robot microphone to Home Assistant Assist bridge.
 
 By default commands are submitted to the configured Home Assistant Conversation
 pipeline.  The optional direct-agent mode uses the OpenAI Responses API and may
@@ -963,6 +963,11 @@ class Bridge:
     def __init__(self, config: Config, ha: HomeAssistantClient) -> None:
         self.config = config
         self.ha = ha
+        self.audio_source = (
+            "esp32_pdm_wifi"
+            if config.rtsp_url.casefold().startswith("tcp://")
+            else "gopro_rtsp"
+        )
         self.vad = AdaptiveVad(config)
         self.processing_task: asyncio.Task[None] | None = None
         self.suppress_until = 0.0
@@ -1494,13 +1499,13 @@ class Bridge:
                 await self.ha.set_sensor("sensor.gopro_assist_status", "listening")
 
     async def handle_segment(self, audio: bytes) -> None:
-        """Run the proven local-gate/cloud-STT flow on one GoPro phrase."""
+        """Run the proven local-gate/cloud-STT flow on one microphone phrase."""
         history_started = False
         try:
             await self.ha.set_sensor(
                 "sensor.gopro_assist_status",
                 "local_stt",
-                {"audio_bytes": len(audio), "source": "gopro_rtsp"},
+                {"audio_bytes": len(audio), "source": self.audio_source},
             )
             local_draft = (await self.ha.run_stt(audio)).strip()
             if not local_draft:
@@ -1522,37 +1527,11 @@ class Bridge:
             if self.config.stt_only_mode:
                 speaker_match = self.speaker_profiles.identify(audio)
                 speaker_name = speaker_match[0] if speaker_match else "Говорящий"
-                self.dialog_history.start_turn(
-                    local_draft,
-                    speaker_name,
-                    draft=local_draft,
-                    final="",
-                    stage="draft",
-                    duration_seconds=round(len(audio) / 2 / SAMPLE_RATE, 3),
-                )
-                history_started = True
-                await self.publish_dialog_history()
-                await self.ha.set_sensor(
-                    "sensor.gopro_assist_transcript",
-                    local_draft,
-                    {
-                        "full_text": local_draft,
-                        "draft": local_draft,
-                        "final": "",
-                        "speaker": speaker_name,
-                        "stage": "draft",
-                        "updated_at": int(time.time()),
-                    },
-                )
                 self.extend_conversation()
 
             # Match the Windows prototype: acknowledge as soon as local Whisper
             # accepts speech, while the same prepared PCM is sent to Audio STT.
             acknowledgement = await self.acknowledge_long_request()
-            if self.config.stt_only_mode:
-                self.dialog_history.finish_turn(acknowledgement)
-                self.dialog_history.update_turn(acknowledgement=acknowledgement)
-                await self.publish_dialog_history()
 
             await self.ha.set_sensor(
                 "sensor.gopro_assist_status",
@@ -1569,22 +1548,28 @@ class Bridge:
                     transcript = ""
                 usage = dict(self.cloud_transcriber.last_usage)
                 summary = dict(self.cloud_transcriber.last_summary)
-                self.dialog_history.update_turn(
-                    user=transcript,
+                self.dialog_history.start_turn(
+                    transcript,
+                    speaker_name,
+                    draft="",
                     final=transcript,
                     stage="final",
+                    duration_seconds=round(len(audio) / 2 / SAMPLE_RATE, 3),
                     input_tokens=int(usage.get("input_tokens", 0)),
                     output_tokens=int(usage.get("output_tokens", 0)),
                     total_tokens=int(usage.get("total_tokens", 0)),
                     cost_usd=float(summary.get("estimated_cost_usd", 0.0)),
                 )
+                history_started = True
+                self.dialog_history.finish_turn(acknowledgement)
+                self.dialog_history.update_turn(acknowledgement=acknowledgement)
                 await self.publish_dialog_history()
                 await self.ha.set_sensor(
                     "sensor.gopro_assist_transcript",
                     transcript or "no speech",
                     {
                         "full_text": transcript,
-                        "draft": local_draft,
+                        "draft": "",
                         "final": transcript,
                         "speaker": speaker_name,
                         "stage": "final",
@@ -1730,7 +1715,111 @@ class Bridge:
             if message:
                 LOGGER.warning("ffmpeg: %s", message)
 
+    async def consume_pcm_stream(
+        self, stream: asyncio.StreamReader, source: str
+    ) -> None:
+        """Consume 16 kHz, 16-bit mono PCM with the shared Sokol VAD."""
+        self.audio_source = source
+        await self.ha.set_sensor(
+            "sensor.gopro_assist_status", "listening", {"source": source}
+        )
+        self.vad.reset()
+        try:
+            while not self.stop_event.is_set():
+                chunk = await stream.readexactly(CHUNK_BYTES)
+                if self.speaker_active or time.monotonic() < self.suppress_until:
+                    self.vad.reset()
+                    continue
+                segment, rms = self.vad.feed(chunk)
+                now = time.monotonic()
+                if now - self.last_metrics >= 5:
+                    self.last_metrics = now
+                    await self.ha.set_sensor(
+                        "sensor.gopro_assist_status",
+                        "processing"
+                        if self.processing_task and not self.processing_task.done()
+                        else "listening",
+                        {
+                            "rms": rms,
+                            "noise_floor": round(self.vad.noise_floor),
+                            "start_threshold": self.vad.start_threshold,
+                            "end_threshold": self.vad.end_threshold,
+                            "pipeline": self.config.pipeline_name,
+                            "media_player": self.config.media_player,
+                            "source": source,
+                        },
+                    )
+                if segment is None:
+                    continue
+                if self.processing_task and not self.processing_task.done():
+                    LOGGER.warning("dropping speech segment while previous request is active")
+                    continue
+                self.processing_task = asyncio.create_task(self.handle_segment(segment))
+        except asyncio.IncompleteReadError as err:
+            raise RuntimeError(
+                f"{source} audio stream ended after {len(err.partial)} trailing bytes"
+            ) from err
+
+    async def capture_tcp_pcm_once(self) -> None:
+        """Wait for one ESPHome raw-PCM TCP client and consume it."""
+        endpoint = self.config.rtsp_url[6:]
+        host, separator, port_text = endpoint.rpartition(":")
+        if not separator or not host or not port_text.isdigit():
+            raise ValueError("TCP PCM source must use tcp://HOST:PORT")
+        port = int(port_text)
+        clients: asyncio.Queue[
+            tuple[asyncio.StreamReader, asyncio.StreamWriter]
+        ] = asyncio.Queue(maxsize=1)
+
+        async def accept(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            if clients.full():
+                writer.close()
+                await writer.wait_closed()
+                return
+            clients.put_nowait((reader, writer))
+
+        server = await asyncio.start_server(accept, host, port)
+        await self.ha.set_sensor(
+            "sensor.gopro_assist_status",
+            "waiting_microphone",
+            {"source": "esp32_pdm_wifi", "listen": f"{host}:{port}"},
+        )
+        LOGGER.info("waiting for ESP32 microphone PCM on %s:%d", host, port)
+        client_task = asyncio.create_task(clients.get())
+        stop_task = asyncio.create_task(self.stop_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                (client_task, stop_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if stop_task in done:
+                client_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await client_task
+                return
+            reader, writer = client_task.result()
+        finally:
+            stop_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await stop_task
+            server.close()
+            await server.wait_closed()
+
+        peer = writer.get_extra_info("peername")
+        LOGGER.info("ESP32 microphone connected from %s", peer)
+        try:
+            await self.consume_pcm_stream(reader, "esp32_pdm_wifi")
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
     async def capture_once(self) -> None:
+        if self.config.rtsp_url.casefold().startswith("tcp://"):
+            await self.capture_tcp_pcm_once()
+            return
+
         await self.ha.set_sensor(
             "sensor.gopro_assist_status",
             "connecting",
@@ -1772,42 +1861,8 @@ class Bridge:
         assert process.stdout is not None
         assert process.stderr is not None
         stderr_task = asyncio.create_task(self.read_ffmpeg_stderr(process.stderr))
-        await self.ha.set_sensor("sensor.gopro_assist_status", "listening")
-        self.vad.reset()
         try:
-            while not self.stop_event.is_set():
-                chunk = await process.stdout.readexactly(CHUNK_BYTES)
-                if self.speaker_active or time.monotonic() < self.suppress_until:
-                    self.vad.reset()
-                    continue
-                segment, rms = self.vad.feed(chunk)
-                now = time.monotonic()
-                if now - self.last_metrics >= 5:
-                    self.last_metrics = now
-                    await self.ha.set_sensor(
-                        "sensor.gopro_assist_status",
-                        "processing"
-                        if self.processing_task and not self.processing_task.done()
-                        else "listening",
-                        {
-                            "rms": rms,
-                            "noise_floor": round(self.vad.noise_floor),
-                            "start_threshold": self.vad.start_threshold,
-                            "end_threshold": self.vad.end_threshold,
-                            "pipeline": self.config.pipeline_name,
-                            "media_player": self.config.media_player,
-                        },
-                    )
-                if segment is None:
-                    continue
-                if self.processing_task and not self.processing_task.done():
-                    LOGGER.warning("dropping speech segment while previous request is active")
-                    continue
-                self.processing_task = asyncio.create_task(self.handle_segment(segment))
-        except asyncio.IncompleteReadError as err:
-            raise RuntimeError(
-                f"ffmpeg audio stream ended after {len(err.partial)} trailing bytes"
-            ) from err
+            await self.consume_pcm_stream(process.stdout, "gopro_rtsp")
         finally:
             if process.returncode is None:
                 process.terminate()
@@ -1870,7 +1925,8 @@ async def async_main() -> None:
     if not token:
         raise RuntimeError("SUPERVISOR_TOKEN is not available")
     LOGGER.info(
-        "starting GoPro Assist bridge pipeline=%s wake_phrases=%s output=%s",
+        "starting Sokol microphone bridge source=%s pipeline=%s wake_phrases=%s output=%s",
+        config.rtsp_url,
         config.pipeline_name,
         ",".join(config.wake_phrases),
         config.media_player,

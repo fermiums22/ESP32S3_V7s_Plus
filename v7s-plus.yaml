@@ -175,6 +175,15 @@ microphone:
     # The test meter removes DC independently for each stereo channel.
     correct_dc_offset: false
 
+# The robot sends raw 16 kHz / 16-bit mono PCM continuously over Wi-Fi.  Sokol
+# performs its existing local AVX-512 VAD/STT gate and forwards only accepted
+# phrase samples to OpenAI Audio STT. USB is only needed for the first flash.
+wifi_pcm_streamer:
+  id: sokol_microphone_stream
+  microphone: robot_pdm_microphones
+  host: 192.168.0.4
+  port: 10300
+
 mic_level_meter:
   microphone: robot_pdm_microphones
   update_interval: 100ms
